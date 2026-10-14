@@ -1,5 +1,10 @@
 # AMDNR — DLSS 5 Neural Rendering on AMD (OptiScaler build) — v0.3.5.5
 
+> **Modified Linux fork of AMDNR by 3zwr1.** This repository adds an experimental
+> native ROCm bridge. See [Linux setup and validation](linux/README.md) for the
+> tested configuration and current limitations. The upstream release notes below
+> describe AMDNR; they do not imply Linux game compatibility.
+
 **English** | [中文](README.zh-CN.md) | [Português](README.pt-BR.md) | [Español](README.es.md) | [العربية](README.ar.md) | [Français](README.fr.md) | [Italiano](README.it.md) | [Русский](README.ru.md) | [Polski](README.pl.md)
 
 > **We need your support.** Join the Discord server — <https://discord.gg/AMDNR> — for
@@ -344,12 +349,13 @@ the host refuses it). The capture host is AMDNR's own build, downloaded from AMD
 
 ## Linux / Proton (Steam Deck, desktop Linux)
 
-AMDNR runs under Proton and Wine as an OptiScaler build. **Neural Rendering does not run on Linux (Windows only):**
-both NR runtimes need the Windows AMD driver's HIP, which Proton and Wine do not provide. With NR switched on under
-Proton, NR does not run, and since 0.3.5 the Neural tab and the report say so (instead of "Idle"). That is expected,
-not a crash or a broken install. The AMDNR
-Launcher is a Windows program that can run under Proton (experimental, not tested by us yet, see below); installing
-by hand works without it.
+This fork adds an experimental Linux ROCm bridge for lmxxf Neural Rendering.
+**Build, install, restore, and test instructions: [linux/README.md](linux/README.md).**
+Neural rendering is verified in a short The Witcher 3 DX12 gameplay session on RX 9070 XT
+with Proton-Wineland 11.0; automated tests also pass on GE-Proton11-9. Compatibility remains
+experimental; Stellar Blade failed earlier tests and is not yet validated with the final bridge.
+Stock Proton does not provide HIP by itself: use the bridge, private ROCm libraries, and
+patched vkd3d-proton together.
 
 **What works:** the FSR upscalers (FSR 3.1, and FSR 4 on GPUs and drivers that support it), the menu (`INSERT`) and
 **Save report**. A player confirmed on Steam Proton (RX 9070 XT, vkd3d-proton, Resident Evil Requiem) that the game
@@ -424,11 +430,12 @@ Please add your distribution, GPU, Mesa version and Proton version.
 
 ## Requirements
 
-- Windows 10 or 11 (64-bit) for Neural Rendering. The AMDNR Launcher is a Windows program that can run under Proton
-  (experimental, not tested by us yet). Under Linux / Proton AMDNR runs as an OptiScaler build without NR (see
-  "Linux / Proton").
-- An AMD GPU with AMD Software: Adrenalin Edition 26.9.1 or newer. The neural runtime uses HIP through
-  the driver; no HIP SDK and no developer mode are needed. Which chips:
+- Windows 10 or 11 (64-bit), or the experimental [Linux ROCm bridge](linux/README.md) in this fork
+  for lmxxf Neural Rendering. Linux requires a compatible Proton and private ROCm runtime; see the Linux guide
+  for the tested GPU, setup, and current game compatibility.
+- An AMD GPU. Windows requires AMD Software: Adrenalin Edition 26.9.1 or newer; Linux uses the
+  native ROCm runtime described in the Linux guide. On Windows, HIP comes from the driver; no HIP SDK
+  and no developer mode are needed. Which chips:
   - RX 9000 (RDNA 4): both runtimes.
   - RX 7000 (RDNA 3, desktop and mobile): both runtimes - lmxxf through AMDNR's RDNA 3 backend, slower than on
     RDNA 4 (the network size tier is on by default, see above).

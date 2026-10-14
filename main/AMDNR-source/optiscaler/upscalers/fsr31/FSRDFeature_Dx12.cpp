@@ -2291,12 +2291,9 @@ bool FSRDFeatureDx12::InitFSR3(const NVSDK_NGX_Parameter* InParameters)
 
         LOG_INFO("FSR Ray Regeneration Initialized");
 
-        // (AMDNR 0.3.4, RR report from a Proton player: "I don't have to have NR enabled for this to take effect
-        // right?") Once per process: Ray Regeneration does not depend on Neural Rendering. Both NR runtimes load
-        // AMD's HIP runtime (amdhip64_7.dll, part of the Windows AMD driver), which Wine/Proton does not provide
-        // (amd_bridge.log: "HIP not available ... Win32 error 126"). (0.3.4.2, H3) The Wine/Proton line no longer
-        // says RR "works here": 0.3.4.1's docs list FSR Ray Regeneration as a known issue under Wine/Proton (pink /
-        // magenta patches in some games); FSR upscaling is what works there. Still once per process (the latch).
+        // Ray Regeneration does not depend on Neural Rendering. Wine/Proton
+        // needs the separate Linux HIP bridge for lmxxf NR; RR compatibility
+        // remains independent of whether that bridge is installed.
         static bool loggedRrWithoutNr = false;
         if (!loggedRrWithoutNr)
         {
@@ -2306,9 +2303,8 @@ bool FSRDFeatureDx12::InitFSR3(const NVSDK_NGX_Parameter* InParameters)
             if (State::Instance().isRunningOnLinux)
                 LOG_INFO("[RR_DIAG] Running under Wine/Proton: FSR upscaling works here; FSR Ray Regeneration is a "
                          "known issue here (pink / magenta patches in some games: use plain FSR, FSR 4 on RX 9000, "
-                         "and send a Save report). Neural Rendering cannot run here: both NR runtimes need AMD's "
-                         "HIP runtime (amdhip64_7.dll from the Windows AMD driver), which Wine/Proton does not "
-                         "provide.");
+                         "and send a Save report). lmxxf Neural Rendering requires this fork's Linux HIP bridge "
+                         "and native ROCm runtime; see linux/README.md for setup and validated configurations.");
         }
 
         // RR-19: an FSR_RR feature now serves this handle (see ClearRRFallback).

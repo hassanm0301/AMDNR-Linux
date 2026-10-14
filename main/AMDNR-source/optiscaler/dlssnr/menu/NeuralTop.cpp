@@ -1150,19 +1150,16 @@ void DrawAttention(const Ctx& ctx)
         offer("This GPU cannot run a neural runtime", g.note, nullptr, Action::None);
 
     // 3. lmxxf chosen, but HIP cannot be used (danielblnc's runtime was built instead). 0.3.3.2's rule and order.
-    //    (0.3.4, RR-27) Under Wine/Proton (State::isRunningOnLinux, IsRunningOnWine in dllmain.cpp) HIP never loads:
-    //    amdhip64_7.dll comes with the Windows AMD driver only, so "reinstall the driver" would send the player the
-    //    wrong way. Both runtimes need HIP there; FSR upscaling does not. (0.3.4.2, H3) FSR Ray Regeneration is not
-    //    claimed to work there any more: 0.3.4.1's docs list it as a known issue under Wine/Proton (pink / magenta
-    //    patches in some games), and the hover repeats that wording.
+    // Wine/Proton needs this fork's Linux HIP bridge and ROCm runtime.
+    // Report a missing bridge without claiming neural rendering is impossible.
     if (f.hipMissing)
     {
         if (State::Instance().isRunningOnLinux)
-            offer("Running under Wine/Proton: Neural Rendering cannot run here",
-                  "Both NR runtimes need AMD's HIP runtime (amdhip64_7.dll), which comes with the Windows AMD driver"
-                  " and is not available under Wine/Proton. FSR upscaling works under Wine/Proton. FSR Ray"
-                  " Regeneration is a known issue there: it can show pink / magenta patches in some games; if you see"
-                  " them, use plain FSR (FSR 4 on RX 9000) and send a Save report.",
+            offer("Linux HIP bridge is not available: Neural Rendering is inactive",
+                  "The Linux HIP bridge or native ROCm runtime did not load or start. Launch the game through"
+                  " amdnr-linux/run.sh in its existing Steam prefix and check the amdnr-hip log messages."
+                  " See linux/README.md in this fork for setup. FSR upscaling does not require this bridge."
+                  " FSR Ray Regeneration remains a separate known issue on Proton (pink / magenta patches).",
                   nullptr, Action::None);
         else
             offer("HIP is not available on this system, so lmxxf cannot run here",

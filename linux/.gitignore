@@ -1,0 +1,5 @@
+build/
+deps/
+test-prefix/
+*.log
+__pycache__/

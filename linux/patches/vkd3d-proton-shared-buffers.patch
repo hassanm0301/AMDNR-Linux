@@ -1,0 +1,82 @@
+diff --git a/libs/vkd3d/memory.c b/libs/vkd3d/memory.c
+index 3928991..d0e9984 100644
+--- a/libs/vkd3d/memory.c
++++ b/libs/vkd3d/memory.c
+@@ -1386,6 +1386,7 @@ static HRESULT vkd3d_memory_allocation_init(struct vkd3d_memory_allocation *allo
+     const struct vkd3d_vk_device_procs *vk_procs = &device->vk_procs;
+     VkBufferDeviceAddressAlignmentAllocateInfoVALVE alignment_info;
+     VkMemoryPriorityAllocateInfoEXT priority_info;
++    VkMemoryDedicatedAllocateInfo shared_dedicated_info;
+     VkMemoryRequirements memory_requirements;
+     VkMemoryAllocateFlagsInfo flags_info;
+     VkMemoryPropertyFlags type_flags;
+@@ -1511,6 +1512,22 @@ static HRESULT vkd3d_memory_allocation_init(struct vkd3d_memory_allocation *allo
+     flags_info.pNext = info->pNext;
+     flags_info.flags = 0;
+ 
++    /* HIP imports a D3D12 committed buffer at offset zero as dedicated memory.
++     * Keep the Vulkan allocation tied to that exact exportable buffer. Mixed
++     * resource heaps must remain able to bind placed images as well. */
++    if ((info->heap_flags & D3D12_HEAP_FLAG_SHARED) &&
++            !(info->heap_flags & D3D12_HEAP_FLAG_SHARED_CROSS_ADAPTER) &&
++            (info->heap_flags & D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS) ==
++                    D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS &&
++            (info->flags & VKD3D_ALLOCATION_FLAG_GLOBAL_BUFFER) && !info->host_ptr)
++    {
++        memset(&shared_dedicated_info, 0, sizeof(shared_dedicated_info));
++        shared_dedicated_info.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO;
++        shared_dedicated_info.buffer = allocation->resource.vk_buffer;
++        shared_dedicated_info.pNext = flags_info.pNext;
++        flags_info.pNext = &shared_dedicated_info;
++    }
++
+     if (device->device_info.zero_initialize_device_memory_features.zeroInitializeDeviceMemory &&
+             !(info->heap_flags & D3D12_HEAP_FLAG_CREATE_NOT_ZEROED))
+     {
+@@ -2312,6 +2329,7 @@ HRESULT vkd3d_allocate_heap_memory(struct d3d12_device *device, struct vkd3d_mem
+ {
+     struct vkd3d_allocate_heap_memory_info heap_info;
+     struct vkd3d_allocate_memory_info alloc_info;
++    VkExportMemoryAllocateInfo export_info;
+     HRESULT hr;
+ 
+     memset(&alloc_info, 0, sizeof(alloc_info));
+@@ -2326,6 +2344,17 @@ HRESULT vkd3d_allocate_heap_memory(struct d3d12_device *device, struct vkd3d_mem
+ 
+     alloc_info.flags |= info->extra_allocation_flags;
+ 
++    if ((info->heap_desc.Flags & D3D12_HEAP_FLAG_SHARED) &&
++            !(info->heap_desc.Flags & D3D12_HEAP_FLAG_SHARED_CROSS_ADAPTER) &&
++            !(info->heap_desc.Flags & D3D12_HEAP_FLAG_DENY_BUFFERS) && !info->host_ptr)
++    {
++        memset(&export_info, 0, sizeof(export_info));
++        export_info.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO;
++        export_info.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT;
++        alloc_info.pNext = &export_info;
++        alloc_info.flags |= VKD3D_ALLOCATION_FLAG_DEDICATED;
++    }
++
+     /* If we allow suballocation in any way, we need a buffer we can use to clear memory with. */
+     if (!(info->heap_desc.Flags & D3D12_HEAP_FLAG_DENY_BUFFERS) ||
+             (info->extra_allocation_flags & VKD3D_ALLOCATION_FLAG_ALLOW_IMAGE_SUBALLOCATION))
+diff --git a/libs/vkd3d/resource.c b/libs/vkd3d/resource.c
+index a8fc26b..ee3fb1d 100644
+--- a/libs/vkd3d/resource.c
++++ b/libs/vkd3d/resource.c
+@@ -195,6 +195,16 @@ HRESULT vkd3d_create_buffer(struct d3d12_device *device,
+         vk_prepend_struct(&buffer_info, &external_info);
+     }
+ 
++    /* AMDNR: shared D3D12 buffers must be exportable just like shared images. */
++    if ((heap_flags & D3D12_HEAP_FLAG_SHARED) &&
++            !(desc->Flags & D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER))
++    {
++        external_info.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO;
++        external_info.pNext = NULL;
++        external_info.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT;
++        vk_prepend_struct(&buffer_info, &external_info);
++    }
++
+     if (sparse_resource)
+     {
+         buffer_info.flags |= VK_BUFFER_CREATE_SPARSE_BINDING_BIT |
