@@ -1,8 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
  * D3D12 fences are virtual timelines in Wine. Importing their raw fd as a HIP
  * timeline would use the wrong values. Preserve D3D12 semantics on a Wine
- * thread, ordered with the HIP stream through native host callbacks. */
+ * thread, ordered with the HIP stream through native host callbacks.
+ * All Win32/COM work stays in this PE module. The Unix side sees only an
+ * opaque synchronization token and never calls into this worker. */
 #include "bridge.h"
+#include "fence_shared.h"
 #include <dxgi1_4.h>
 #include <initguid.h>
 #include <d3d12.h>
@@ -15,16 +18,16 @@ struct fence {
 };
 struct worker;
 struct job {
-    struct worker *worker;
+    void *token;
     struct fence *fence;
     uint64_t value;
-    int signal, ready, finished;
+    int signal;
     struct job *next;
 };
 struct worker {
     hipStream_t stream;
-    pthread_mutex_t mutex;
-    pthread_cond_t condition;
+    SRWLOCK mutex;
+    CONDITION_VARIABLE condition;
     HANDLE thread;
     struct job *head, *tail;
     int stop;
@@ -34,8 +37,8 @@ struct worker {
     hipError_t error;
     struct worker *next;
 };
-static pthread_mutex_t registry = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t registry_changed = PTHREAD_COND_INITIALIZER;
+static SRWLOCK registry = SRWLOCK_INIT;
+static CONDITION_VARIABLE registry_changed = CONDITION_VARIABLE_INIT;
 static struct fence *fences;
 static struct worker *workers;
 
@@ -49,9 +52,8 @@ static struct worker *get_worker_locked(hipStream_t stream)
     worker = calloc(1, sizeof(*worker));
     if (!worker) return NULL;
     worker->stream = stream;
-    if (pthread_mutex_init(&worker->mutex, NULL)) { free(worker); return NULL; }
-    if (pthread_cond_init(&worker->condition, NULL))
-    { pthread_mutex_destroy(&worker->mutex); free(worker); return NULL; }
+    InitializeSRWLock(&worker->mutex);
+    InitializeConditionVariable(&worker->condition);
     worker->next = workers;
     workers = worker;
     return worker;
@@ -59,17 +61,17 @@ static struct worker *get_worker_locked(hipStream_t stream)
 
 static void finish_worker_call(struct worker *worker)
 {
-    pthread_mutex_lock(&registry);
+    AcquireSRWLockExclusive(&registry);
     --worker->active_calls;
-    pthread_cond_broadcast(&registry_changed);
-    pthread_mutex_unlock(&registry);
+    WakeAllConditionVariable(&registry_changed);
+    ReleaseSRWLockExclusive(&registry);
 }
 
 static void release_fence(struct fence *fence)
 {
-    pthread_mutex_lock(&registry);
+    AcquireSRWLockExclusive(&registry);
     unsigned remaining = --fence->references;
-    pthread_mutex_unlock(&registry);
+    ReleaseSRWLockExclusive(&registry);
     if (!remaining) { ID3D12Fence_Release(fence->object); free(fence); }
 }
 
@@ -77,67 +79,54 @@ static DWORD WINAPI worker_main(void *argument)
 {
     struct worker *worker = argument;
     HANDLE event = CreateEventW(NULL, FALSE, FALSE, NULL);
-    pthread_mutex_lock(&worker->mutex);
+    AcquireSRWLockExclusive(&worker->mutex);
     for (;;)
     {
         while (!worker->head && !worker->stop)
-            pthread_cond_wait(&worker->condition, &worker->mutex);
+            SleepConditionVariableSRW(&worker->condition, &worker->mutex, INFINITE, 0);
         if (!worker->head) break;
         struct job *job = worker->head;
-        while (!job->ready) pthread_cond_wait(&worker->condition, &worker->mutex);
         worker->head = job->next;
         if (!worker->head) worker->tail = NULL;
-        pthread_mutex_unlock(&worker->mutex);
+        ReleaseSRWLockExclusive(&worker->mutex);
 
+        hipError_t error = amdnr_native_fence_wait(job->token);
         HRESULT result = E_FAIL;
-        if (job->signal)
+        if (!error && job->signal)
             result = ID3D12Fence_Signal(job->fence->object, job->value);
-        else if (event)
+        else if (!error && event)
         {
             result = ID3D12Fence_SetEventOnCompletion(job->fence->object, job->value, event);
             if (SUCCEEDED(result) && WaitForSingleObject(event, INFINITE) != WAIT_OBJECT_0)
                 result = E_FAIL;
         }
         release_fence(job->fence);
-        pthread_mutex_lock(&worker->mutex);
-        if (FAILED(result))
+        AcquireSRWLockExclusive(&worker->mutex);
+        if (error || FAILED(result))
         {
             amdnr_log("D3D12 fence %s failed: %#x", job->signal ? "signal" : "wait", (unsigned)result);
-            worker->error = hipErrorUnknown;
+            worker->error = error ? error : hipErrorUnknown;
         }
-        job->finished = 1;
-        pthread_cond_broadcast(&worker->condition);
-        /* The native callback owns and frees job after this notification. */
+        /* Acknowledgement comes only after the actual COM operation and COM
+         * reference release. Native stream progress never substitutes for this
+         * acknowledgement. Preserve COM errors for HIP stream sync/destroy. */
+        error = amdnr_native_fence_complete(job->token);
+        if (error) worker->error = error;
+        free(job);
     }
-    pthread_mutex_unlock(&worker->mutex);
+    ReleaseSRWLockExclusive(&worker->mutex);
     if (event) CloseHandle(event);
     return 0;
 }
 
-/* Called on a ROCm pthread: no Win32 or HIP API calls are permitted here. */
-static void native_callback(void *argument)
-{
-    struct job *job = argument;
-    struct worker *worker = job->worker;
-    pthread_mutex_lock(&worker->mutex);
-    job->ready = 1;
-    pthread_cond_broadcast(&worker->condition);
-    while (!job->finished) pthread_cond_wait(&worker->condition, &worker->mutex);
-    pthread_mutex_unlock(&worker->mutex);
-    free(job);
-}
-
 hipError_t amdnr_fence_import(hipExternalSemaphore_t *out, HANDLE handle)
 {
-    REQUIRE_FN(hipGetDevice);
-    NATIVE_FN(hipGetDevicePropertiesR0600);
-    /* hipGetDeviceProperties is an SDK macro; always request the versioned ABI. */
-    hipGetDevicePropertiesR0600_native = (__typeof__(&hipGetDeviceProperties))amdnr_symbol("hipGetDevicePropertiesR0600");
-    if (!hipGetDevicePropertiesR0600_native) return hipErrorNotSupported;
+    if (!out || !handle) return hipErrorInvalidValue;
+    *out = NULL;
     int ordinal = 0;
     hipDeviceProp_t properties;
-    hipError_t error = hipGetDevice_native(&ordinal);
-    if (!error) error = hipGetDevicePropertiesR0600_native(&properties, ordinal);
+    hipError_t error = amdnr_native_hipGetDevice(&ordinal);
+    if (!error) error = amdnr_native_hipGetDevicePropertiesR0600(&properties, ordinal);
     if (!error) error = amdnr_fix_identity(&properties, ordinal);
     if (error) return error;
     IDXGIFactory4 *factory = NULL;
@@ -161,22 +150,22 @@ hipError_t amdnr_fence_import(hipExternalSemaphore_t *out, HANDLE handle)
         return hr == E_OUTOFMEMORY ? hipErrorOutOfMemory : hipErrorInvalidHandle;
     }
     fence->references = 1;
-    pthread_mutex_lock(&registry);
+    AcquireSRWLockExclusive(&registry);
     fence->next = fences;
     fences = fence;
-    pthread_mutex_unlock(&registry);
+    ReleaseSRWLockExclusive(&registry);
     *out = (hipExternalSemaphore_t)fence;
     return hipSuccess;
 }
 
 hipError_t amdnr_fence_destroy(hipExternalSemaphore_t semaphore)
 {
-    pthread_mutex_lock(&registry);
+    AcquireSRWLockExclusive(&registry);
     struct fence **entry = &fences;
     while (*entry && (void *)*entry != (void *)semaphore) entry = &(*entry)->next;
     struct fence *fence = *entry;
     if (fence) *entry = fence->next;
-    pthread_mutex_unlock(&registry);
+    ReleaseSRWLockExclusive(&registry);
     if (!fence) return hipErrorInvalidHandle;
     release_fence(fence);
     return hipSuccess;
@@ -187,14 +176,12 @@ hipError_t amdnr_fence_submit(const hipExternalSemaphore_t *semaphores, const vo
 {
     if (!count) return hipSuccess;
     if (!semaphores || !parameters) return hipErrorInvalidValue;
-    REQUIRE_FN(hipLaunchHostFunc);
-    REQUIRE_FN(hipStreamIsCapturing);
     hipError_t result = hipSuccess;
 
     /* Validate the entire batch before submitting any side effects. */
     struct job **batch = calloc(count, sizeof(*batch));
     if (!batch) return hipErrorOutOfMemory;
-    pthread_mutex_lock(&registry);
+    AcquireSRWLockExclusive(&registry);
     for (unsigned i = 0; i < count; i++)
     {
         const hipExternalSemaphoreSignalParams *sp = parameters;
@@ -218,11 +205,11 @@ hipError_t amdnr_fence_submit(const hipExternalSemaphore_t *semaphores, const vo
         else if (worker->closing) { worker = NULL; result = hipErrorInvalidHandle; }
         else ++worker->active_calls;
     }
-    pthread_mutex_unlock(&registry);
+    ReleaseSRWLockExclusive(&registry);
     if (!result)
     {
         hipStreamCaptureStatus capture;
-        result = hipStreamIsCapturing_native(stream, &capture);
+        result = amdnr_native_hipStreamIsCapturing(stream, &capture);
         if (!result && capture != hipStreamCaptureStatusNone) result = hipErrorStreamCaptureUnsupported;
     }
     for (unsigned i = 0; i < count; i++)
@@ -231,23 +218,22 @@ hipError_t amdnr_fence_submit(const hipExternalSemaphore_t *semaphores, const vo
         if (!job) continue;
         if (!result)
         {
-            job->worker = worker;
-            pthread_mutex_lock(&worker->mutex);
+            AcquireSRWLockExclusive(&worker->mutex);
             result = worker->error;
             if (!result && !worker->thread)
             {
                 worker->thread = CreateThread(NULL, 0, worker_main, worker, 0, NULL);
                 if (!worker->thread) result = hipErrorOutOfMemory;
             }
-            if (!result) result = hipLaunchHostFunc_native(stream, native_callback, job);
+            if (!result) result = amdnr_native_fence_launch(stream, &job->token);
             if (!result)
             {
                 if (worker->tail) worker->tail->next = job;
                 else worker->head = job;
                 worker->tail = job;
-                pthread_cond_broadcast(&worker->condition);
+                WakeAllConditionVariable(&worker->condition);
             }
-            pthread_mutex_unlock(&worker->mutex);
+            ReleaseSRWLockExclusive(&worker->mutex);
         }
         if (result) { release_fence(job->fence); free(job); }
     }
@@ -258,64 +244,59 @@ hipError_t amdnr_fence_submit(const hipExternalSemaphore_t *semaphores, const vo
 
 hipError_t amdnr_stream_finish(hipStream_t stream, int destroy)
 {
-    REQUIRE_FN(hipStreamSynchronize);
-    NATIVE_FN(hipStreamDestroy);
-    if (destroy && !hipStreamDestroy_native) return hipErrorNotSupported;
-    pthread_mutex_lock(&registry);
+    AcquireSRWLockExclusive(&registry);
     struct worker *worker = get_worker_locked(stream);
-    if (!worker) { pthread_mutex_unlock(&registry); return hipErrorOutOfMemory; }
-    if (worker->closing) { pthread_mutex_unlock(&registry); return hipErrorInvalidHandle; }
+    if (!worker) { ReleaseSRWLockExclusive(&registry); return hipErrorOutOfMemory; }
+    if (worker->closing) { ReleaseSRWLockExclusive(&registry); return hipErrorInvalidHandle; }
     if (destroy)
     {
         worker->closing = 1;
         /* The condition wait drops registry. Submitters and callbacks may need
          * it to release fences; never hold either mutex across a HIP drain. */
-        while (worker->active_calls) pthread_cond_wait(&registry_changed, &registry);
+        while (worker->active_calls) SleepConditionVariableSRW(&registry_changed, &registry, INFINITE, 0);
     }
     else ++worker->active_calls;
-    pthread_mutex_unlock(&registry);
+    ReleaseSRWLockExclusive(&registry);
 
-    hipError_t result = hipStreamSynchronize_native(stream);
+    hipError_t result = amdnr_native_hipStreamSynchronize(stream);
     if (!destroy)
     {
         if (!result)
         {
-            pthread_mutex_lock(&worker->mutex);
+            AcquireSRWLockExclusive(&worker->mutex);
             result = worker->error;
-            pthread_mutex_unlock(&worker->mutex);
+            ReleaseSRWLockExclusive(&worker->mutex);
         }
         finish_worker_call(worker);
         return result;
     }
-    if (!result) result = hipStreamDestroy_native(stream);
+    if (!result) result = amdnr_native_hipStreamDestroy(stream);
     if (result)
     {
         /* A failed drain may leave native callbacks using this worker. Retain
          * it and permit a later retry; freeing it here would be a use-after-free. */
-        pthread_mutex_lock(&registry);
+        AcquireSRWLockExclusive(&registry);
         worker->closing = 0;
-        pthread_cond_broadcast(&registry_changed);
-        pthread_mutex_unlock(&registry);
+        WakeAllConditionVariable(&registry_changed);
+        ReleaseSRWLockExclusive(&registry);
         return result;
     }
 
-    pthread_mutex_lock(&worker->mutex);
+    AcquireSRWLockExclusive(&worker->mutex);
     result = worker->error;
     worker->stop = 1;
-    pthread_cond_broadcast(&worker->condition);
-    pthread_mutex_unlock(&worker->mutex);
+    WakeAllConditionVariable(&worker->condition);
+    ReleaseSRWLockExclusive(&worker->mutex);
     if (worker->thread)
     {
         WaitForSingleObject(worker->thread, INFINITE);
         CloseHandle(worker->thread);
     }
-    pthread_mutex_lock(&registry);
+    AcquireSRWLockExclusive(&registry);
     struct worker **entry = &workers;
     while (*entry != worker) entry = &(*entry)->next;
     *entry = worker->next;
-    pthread_mutex_unlock(&registry);
-    pthread_cond_destroy(&worker->condition);
-    pthread_mutex_destroy(&worker->mutex);
+    ReleaseSRWLockExclusive(&registry);
     free(worker);
     return result;
 }

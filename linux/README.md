@@ -2,16 +2,18 @@
 
 This is a modified Linux fork of **AMDNR by 3zwr1**, implementing the ROCm bridge
 requested in [upstream issue #9](https://github.com/3zwr1/AMD-NR---OptiScaler/issues/9).
-The Windows lmxxf neural runtime calls a Wine builtin `amdhip64_7.dll`, which runs
-its kernels through native Linux ROCm. The model and neural runtime are unmodified.
+The Windows lmxxf neural runtime calls a PE-format Wine builtin `amdhip64_7.dll`.
+It reaches native Linux ROCm through a separate `amdhip64_7.so` and Wine's Unix-call
+dispatcher. The model and neural runtime are unmodified.
 
-**Status: working in a tested game; experimental compatibility.** The Witcher 3
-DX12 loads an existing Steam save and runs neural rendering on RX 9070 XT with
-Proton-Wineland 11.0 (2026-09-30). The player confirmed normal-looking gameplay;
-fresh logs confirm neural results were applied and the game exited normally.
-This was a short gameplay test, not a long-duration stability test. Stellar Blade
-crashed with earlier bridge builds and has not been revalidated with the final
-graphics-device changes; its compatibility remains unconfirmed.
+**Status: working in tested games; experimental compatibility.** Stellar Blade
+now loads the player's existing Steam save and runs neural rendering on RX 9070 XT
+with GE-Proton11-9. The player confirmed normal-looking gameplay, and fresh model
+and composition counters confirm inference was applied. The Witcher 3 DX12 also
+passed an earlier gameplay check with Proton-Wineland 11.0 (2026-09-30).
+These are short gameplay checks, not long-duration stability claims. The current
+PE/Unixlib bridge is game-validated in Stellar Blade; The Witcher 3's gameplay
+check used the preceding bridge build.
 The source snapshot in
 `main/AMDNR-source` is 0.3.4.2; the package uses separately downloaded release
 binaries, not a rebuilt host.
@@ -21,7 +23,7 @@ binaries, not a rebuilt host.
 - x86-64 Linux, an AMD GPU supported by the supplied neural model, and access to
   `/dev/kfd` and its render node. RX 9070 XT (`gfx1201`) is the tested GPU.
 - Wine 11 / Proton based on Wine 11. GE-Proton11-9 and Proton-Wineland 11.0
-  (2026-09-30) pass the automated tests; the latter also passes the game test.
+  (2026-09-30) pass the automated tests and the respective game checks above.
   Shared-memory import currently depends on Wine 11's Vulkan object layout;
   other Wine versions are not assumed compatible.
 - A working Vulkan driver and a D3D12 game already working with your chosen Proton.
@@ -95,7 +97,7 @@ can omit Steam's account context and make existing saves appear absent even when
 they are still on disk. For non-Steam Wine use, set the intended `WINEPREFIX`
 explicitly and pass the full Wine command to `run.sh`.
 
-At first launch the wrapper installs a small HIP placeholder and the supplied
+At first launch the wrapper installs the PE HIP bridge and the supplied
 native shader compiler into that prefix's `system32`. It backs up the old compiler
 (including symlinks), journals changes in `amdnr-linux/prefixes.json`, and refuses
 to overwrite an unrelated HIP DLL. Native DXVK DXGI must remain enabled: Wine's
@@ -150,7 +152,7 @@ suite checks exit status and an explicit success marker for every executable:
    Checks import recreation, unequal timeline values, invalid arguments, and
    unsupported external-fence graph capture.
 3. The actual host temporal shader compiled using its absolute System32 path.
-4. Windows divide-by-zero and access-violation handling before, during, and after
+4. Windows divide-by-zero, access-violation, INT3 and UD2 handling before, during, and after
    HIP initialization, module loading, GPU computation, and cleanup. A background
    thread continuously checks general registers, all XMM registers, MXCSR, and
    the x87 control word while HIP works on another thread.
@@ -194,17 +196,42 @@ model frames and 1,197 fresh neural outputs applied, with temporal history and
 all 71 network blocks active. The input was 2293x960, fed to the network at
 1920x804. Mean HIP kernel time was 10.84–10.89 ms; this is not total frame time.
 Shutdown was normal. Conflicting game mods were removed before this test.
-Stellar Blade crashed with NR enabled in earlier bridge builds; NR-disabled
-gameplay was confirmed separately. The final graphics-device changes have not
-been retested in that game. Neither result is a compatibility claim for other games.
+
+Stellar Blade validation on 2026-10-15: GE-Proton11-9, the PE/Unixlib bridge,
+AMDNR 0.3.5.5R4, private ROCm 7.2.4, and the same RX 9070 XT. The player loaded
+their existing save and confirmed normal-looking gameplay. Six reporting windows
+contained 3,599 model frames and 3,594 fresh composed outputs, all 71 blocks and
+temporal history active, at 1720x720 input. HIP kernel means were 11.18–12.63 ms
+(not total frame time). This is a short-session result, not a claim about every
+scene or long-duration stability. Neither game result establishes compatibility
+with other games.
+
+Controlled Stellar Blade comparisons isolated the previous startup crash:
+NR enabled with native HIP forced unavailable still crashed; blocking the HIP DLL
+entirely allowed gameplay; a minimal ELF DLL returning error 801 reproduced the
+same audio-thread crash; an equivalent native PE DLL allowed gameplay. A separate
+direct-syscall regression reproduced the lost Windows dispatch after ELF loading
+and preserved it with the real PE/Unixlib bridge. The new bridge also passed the
+GPU/interoperability suite and the 720-frame NR-off/on host pipeline comparison.
 
 ## How it works
 
-`bridge/generate.py` produces typed Windows-ABI exports. Each forwards to the
-native Linux HIP function using its native calling convention. Missing functions
-return errors; there is no fake-success fallback. `identity.c` matches HIP and
-Wine Vulkan adapters by PCI address (UUID fallback), returning the LUID expected
-by the Windows neural runtime.
+`bridge/generate.py` produces typed Windows exports, shared argument layouts,
+and matching Unix-call table entries. The real PE DLL performs all Win32, COM,
+and Wine Vulkan operations. Only the native helper loads ROCm and invokes its
+Linux ABI. Missing functions return errors; there is no fake-success fallback.
+The PE module is pinned on first use because fence workers and optional exception
+diagnostics can outlive a caller's DLL reference. Native HIP is never unloaded.
+
+The PE/Unixlib split is required for game compatibility. GE-Proton11-9 disables
+Windows direct-syscall dispatch process-wide when it loads an old-style Winelib
+`.dll.so`. In Stellar Blade, even a minimal ELF DLL returning an unavailable
+error caused the same audio-thread crash; an equivalent PE DLL allowed gameplay.
+Neither control ran neural inference. The launcher rejects leftover
+`amdhip64_7.dll.so` files to prevent the legacy loader path being selected.
+
+`identity.c` matches HIP and Wine Vulkan adapters by PCI address (UUID fallback),
+returning the LUID expected by the Windows neural runtime.
 It borrows DXVK's existing adapter handles and matches physical PCI/UUID
 identifiers, which remain valid when the host spoofs GPU names and vendor IDs.
 
@@ -219,15 +246,15 @@ Wine's normal exception handling. See the pinned
 and [COMGR save/restore](https://github.com/ROCm/llvm-project/blob/rocm-7.2.4/amd/comgr/src/comgr.cpp#L1219-L1233).
 
 Shared resources need more than function forwarding. The vkd3d-proton patch makes
-shared D3D12 buffers exportable, dedicated Vulkan allocations. `vulkan_memory.c`
+shared D3D12 buffers exportable, dedicated Vulkan allocations. `vulkan_memory_pe.c`
 borrows the existing vkd3d-proton device through `ID3D12DeviceExt`, imports Wine's
 shared handle, validates Wine's private object headers, and obtains a Linux fd
 for ROCm. The fd is closed after ROCm duplicates it. The bridge creates no private
 Vulkan instance or device that the host's hooks could mistake for the game's.
 
 D3D12 fences use virtual timeline values; passing a raw Vulkan timeline fd to HIP
-would synchronize the wrong values. `fence.c` keeps the D3D12 fence semantics on
-Wine worker threads and orders them with native HIP stream callbacks. The native
+would synchronize the wrong values. `fence_pe.c` and `fence_unix.c` keep the D3D12
+fence semantics on Wine worker threads and order them with native HIP stream callbacks. The native
 callbacks use only pthread synchronization, never Win32 APIs. Pending jobs hold
 fence references; stream destruction drains and joins the worker. Neural graph
 capture remains supported, but capturing external fence waits/signals is rejected.

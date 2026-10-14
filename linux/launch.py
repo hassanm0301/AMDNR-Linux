@@ -106,6 +106,9 @@ def restore_prefixes(bundle, force=False):
 def environment(bundle, original):
     env = original.copy()
     root = bundle.resolve()
+    legacy = root / "x86_64-unix/amdhip64_7.dll.so"
+    if legacy.exists() or legacy.is_symlink():
+        raise ValueError("Legacy ELF HIP bridge found. Reinstall the current PE/Unixlib package before launching.")
     rocm = root / "rocm/lib"
     if not rocm.is_dir():
         rocm = Path(env.get("ROCM_PATH", "/opt/rocm")) / "lib"

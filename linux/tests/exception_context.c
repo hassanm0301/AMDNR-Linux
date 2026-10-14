@@ -2,8 +2,9 @@
  * Regression for native HIP changing Wine's signal/exception context handling.
  * Build with x86_64-w64-mingw32-gcc; optionally pass compute.hsaco to exercise
  * module loading, GPU execution and cleanup before repeating the CPU probes.
- * A background thread continuously probes exceptions during HIP initialization
- * and GPU work. AMDNR_EXCEPTION_CONCURRENT=0 selects the serial-only comparison.
+ * A background thread continuously probes divide/access/INT3/UD2 exceptions
+ * during HIP initialization and GPU work. AMDNR_EXCEPTION_CONCURRENT=0 selects
+ * the serial-only comparison.
  * No GPU work occurs when AMDNR_EXCEPTION_CPU_ONLY=1 is set.
  */
 #include <windows.h>
@@ -22,7 +23,9 @@
 struct probe_state {
     volatile LONG thread_id;
     volatile uint64_t expected_rsp;
+    volatile LONG active_probe;
     volatile LONG handled;
+    volatile LONG handled_kind[4];
 };
 static struct probe_state probe_states[32];
 const uint32_t exception_test_mxcsr = 0x5f80;
@@ -46,7 +49,12 @@ _Alignas(16) const uint64_t exception_xmm_patterns[16][2] = {
 
 extern int exception_probe_div(volatile uint64_t *expected_rsp);
 extern int exception_probe_access(volatile uint64_t *expected_rsp);
-extern const unsigned char exception_div_fault[], exception_access_fault[];
+extern int exception_probe_int3(volatile uint64_t *expected_rsp);
+extern int exception_probe_ud2(volatile uint64_t *expected_rsp);
+extern const unsigned char exception_div_fault[], exception_access_fault[],
+    exception_int3_fault[], exception_ud2_fault[];
+extern const unsigned char exception_div_fault_resume[], exception_access_fault_resume[],
+    exception_int3_fault_resume[], exception_ud2_fault_resume[];
 
 #define STR_INNER(x) #x
 #define STR(x) STR_INNER(x)
@@ -79,6 +87,7 @@ extern const unsigned char exception_div_fault[], exception_access_fault[];
     LOAD_XMM(12) LOAD_XMM(13) LOAD_XMM(14) LOAD_XMM(15) \
     "xorl %eax, %eax\nxorl %ecx, %ecx\nxorl %edx, %edx\n" \
     ".globl " #fault "\n" #fault ":\n" instruction "\n" \
+    ".globl " #fault "_resume\n" #fault "_resume:\n" \
     "cmpq $0x123, %rax\njne 1f\ncmpq $0x456, %rdx\njne 1f\n" \
     "testq %rcx, %rcx\njne 1f\n" \
     CHECK_GPR(rbx, 0) CHECK_GPR(rbp, 1) CHECK_GPR(rsi, 2) CHECK_GPR(rdi, 3) \
@@ -100,9 +109,31 @@ extern const unsigned char exception_div_fault[], exception_access_fault[];
     "popq %rdi\npopq %rsi\npopq %rbp\npopq %rbx\nret\n.seh_endproc\n"
 
 __asm__(PROBE(exception_probe_div, exception_div_fault, "divl %ecx")
-        PROBE(exception_probe_access, exception_access_fault, "movl (%rax), %eax"));
+        PROBE(exception_probe_access, exception_access_fault, "movl (%rax), %eax")
+        PROBE(exception_probe_int3, exception_int3_fault, "int3")
+        PROBE(exception_probe_ud2, exception_ud2_fault, "ud2"));
 
-static volatile LONG handled, bad_gpr, bad_xmm, bad_fp;
+static const struct probe {
+    int (*run)(volatile uint64_t *);
+    const unsigned char *fault, *resume;
+    DWORD code;
+} probes[] = {
+    {exception_probe_div, exception_div_fault, exception_div_fault_resume, EXCEPTION_INT_DIVIDE_BY_ZERO},
+    {exception_probe_access, exception_access_fault, exception_access_fault_resume, EXCEPTION_ACCESS_VIOLATION},
+    {exception_probe_int3, exception_int3_fault, exception_int3_fault_resume, EXCEPTION_BREAKPOINT},
+    {exception_probe_ud2, exception_ud2_fault, exception_ud2_fault_resume, EXCEPTION_ILLEGAL_INSTRUCTION}
+};
+enum { PROBE_COUNT = sizeof(probes) / sizeof(probes[0]), PROBE_ROUNDS = 16,
+       EXCEPTIONS_PER_BATCH = PROBE_COUNT * PROBE_ROUNDS,
+       FOREGROUND_EXCEPTIONS = EXCEPTIONS_PER_BATCH * 3 };
+_Static_assert(PROBE_COUNT == 4, "Update the per-thread exception counters when adding a probe");
+
+static volatile LONG handled, handled_kind[PROBE_COUNT], bad_gpr, bad_xmm, bad_fp, bad_ip;
+static struct {
+    LONG recorded;
+    DWORD code;
+    uintptr_t ip, record_address, expected;
+} first_bad_ip;
 static HANDLE worker_start, worker_done;
 static volatile LONG worker_stop;
 static DWORD worker_result;
@@ -125,11 +156,27 @@ static LONG WINAPI handler(EXCEPTION_POINTERS *exception)
     CONTEXT *c = exception->ContextRecord;
     const void *ip = (void *)(uintptr_t)c->Rip;
     DWORD code = exception->ExceptionRecord->ExceptionCode;
-    if (!((ip == exception_div_fault && code == EXCEPTION_INT_DIVIDE_BY_ZERO) ||
-          (ip == exception_access_fault && code == EXCEPTION_ACCESS_VIOLATION)))
-        return EXCEPTION_CONTINUE_SEARCH;
     struct probe_state *state = thread_state(0);
-    if (!state) return EXCEPTION_CONTINUE_SEARCH;
+    if (!state || state->active_probe < 1 || state->active_probe > PROBE_COUNT)
+        return EXCEPTION_CONTINUE_SEARCH;
+    unsigned kind = (unsigned)state->active_probe - 1;
+    const struct probe *probe = &probes[kind];
+    const void *address = exception->ExceptionRecord->ExceptionAddress;
+    if (code != probe->code || (ip != probe->fault && address != probe->fault))
+        return EXCEPTION_CONTINUE_SEARCH;
+    /* Windows presents both RIP and ExceptionAddress at the INT3 byte, despite
+     * the CPU trap advancing native RIP by one. UD2/divide/access are faults at
+     * the instruction itself. Check both independently, then resume at an
+     * assembler label rather than assuming every instruction is two bytes. */
+    if (ip != probe->fault || address != probe->fault) {
+        InterlockedIncrement(&bad_ip);
+        if (!InterlockedCompareExchange(&first_bad_ip.recorded, 1, 0)) {
+            first_bad_ip.code = code;
+            first_bad_ip.ip = (uintptr_t)ip;
+            first_bad_ip.record_address = (uintptr_t)address;
+            first_bad_ip.expected = (uintptr_t)probe->fault;
+        }
+    }
     const uint64_t gpr[] = {c->Rbx, c->Rbp, c->Rsi, c->Rdi, c->R8, c->R9,
                            c->R10, c->R11, c->R12, c->R13, c->R14, c->R15};
     if (c->Rax || c->Rcx || c->Rdx || c->Rsp != state->expected_rsp ||
@@ -140,8 +187,10 @@ static LONG WINAPI handler(EXCEPTION_POINTERS *exception)
         c->FltSave.ControlWord != exception_test_fpcw) InterlockedIncrement(&bad_fp);
     c->Rax = 0x123;
     c->Rdx = 0x456;
-    c->Rip += 2;
+    c->Rip = (uintptr_t)probe->resume;
     InterlockedIncrement(&state->handled);
+    InterlockedIncrement(&state->handled_kind[kind]);
+    InterlockedIncrement(&handled_kind[kind]);
     InterlockedIncrement(&handled);
     return EXCEPTION_CONTINUE_EXECUTION;
 }
@@ -152,9 +201,19 @@ static DWORD WINAPI exercise(void *unused)
     struct probe_state *state = thread_state(1);
     if (!state) return 1;
     LONG before = state->handled;
-    for (unsigned i = 0; i < 16; i++)
-        if (exception_probe_div(&state->expected_rsp) || exception_probe_access(&state->expected_rsp)) return 1;
-    return state->handled - before == 32 ? 0 : 1;
+    LONG before_kind[PROBE_COUNT];
+    for (unsigned kind = 0; kind < PROBE_COUNT; kind++) before_kind[kind] = state->handled_kind[kind];
+    for (unsigned i = 0; i < PROBE_ROUNDS; i++) {
+        for (unsigned kind = 0; kind < PROBE_COUNT; kind++) {
+            state->active_probe = (LONG)kind + 1;
+            int failed = probes[kind].run(&state->expected_rsp);
+            state->active_probe = 0;
+            if (failed) return 1;
+        }
+    }
+    for (unsigned kind = 0; kind < PROBE_COUNT; kind++)
+        if (state->handled_kind[kind] - before_kind[kind] != PROBE_ROUNDS) return 1;
+    return state->handled - before == EXCEPTIONS_PER_BATCH ? 0 : 1;
 }
 
 static DWORD WINAPI concurrent_worker(void *unused)
@@ -164,7 +223,7 @@ static DWORD WINAPI concurrent_worker(void *unused)
     InterlockedIncrement(&stress_batches);
     SetEvent(stress_ready);
     while (!InterlockedCompareExchange(&stress_stop, 0, 0)) {
-        if (exercise(NULL) || bad_gpr || bad_xmm || bad_fp) return 1;
+        if (exercise(NULL) || bad_gpr || bad_xmm || bad_fp || bad_ip) return 1;
         InterlockedIncrement(&stress_batches);
     }
     return 0;
@@ -197,11 +256,12 @@ static int check_stage(const char *stage)
         fprintf(stderr, "fresh thread register restore failed\n"); return 1;
     }
     CloseHandle(fresh);
-    if (handled - before < 96 || bad_gpr || bad_xmm || bad_fp) {
-        fprintf(stderr, "context mismatch: handled=%ld gpr=%ld xmm=%ld fp=%ld\n",
-                handled - before, bad_gpr, bad_xmm, bad_fp); return 1;
+    if (handled - before < FOREGROUND_EXCEPTIONS || bad_gpr || bad_xmm || bad_fp || bad_ip) {
+        fprintf(stderr, "context mismatch: handled=%ld gpr=%ld xmm=%ld fp=%ld ip=%ld\n",
+                handled - before, bad_gpr, bad_xmm, bad_fp, bad_ip); return 1;
     }
-    printf("OK: %s, 96 foreground exceptions; background batches=%ld\n", stage, stress_batches); fflush(stdout);
+    printf("OK: %s, %u foreground exceptions (divide/access/INT3/UD2); background batches=%ld\n",
+           stage, FOREGROUND_EXCEPTIONS, stress_batches); fflush(stdout);
     return 0;
 }
 
@@ -282,8 +342,9 @@ int main(int argc, char **argv)
         if (WaitForSingleObject(stress, 10000) != WAIT_OBJECT_0 ||
             !GetExitCodeThread(stress, &stress_result) || stress_result || !stress_batches) result = 1;
         CloseHandle(stress);
-        printf("Concurrent stress completed: batches=%ld exceptions=%lld gpr=%ld xmm=%ld fp=%ld result=%lu\n",
-                stress_batches, (long long)stress_batches * 32, bad_gpr, bad_xmm, bad_fp, stress_result);
+        printf("Concurrent stress completed: batches=%ld exceptions=%lld gpr=%ld xmm=%ld fp=%ld ip=%ld result=%lu\n",
+                stress_batches, (long long)stress_batches * EXCEPTIONS_PER_BATCH,
+                bad_gpr, bad_xmm, bad_fp, bad_ip, stress_result);
     }
     if (stress_ready) CloseHandle(stress_ready);
     worker_stop = 1;
@@ -291,6 +352,12 @@ int main(int argc, char **argv)
     if (WaitForSingleObject(worker, 10000) != WAIT_OBJECT_0) return 1;
     CloseHandle(worker); CloseHandle(worker_start); CloseHandle(worker_done);
     RemoveVectoredExceptionHandler(registration);
-    if (!result) puts("PASS: exception GPR/XMM/FP context and register restoration survived all tested stages");
+    printf("Handled exceptions: divide=%ld access=%ld INT3=%ld UD2=%ld; gpr=%ld xmm=%ld fp=%ld ip=%ld\n",
+           handled_kind[0], handled_kind[1], handled_kind[2], handled_kind[3], bad_gpr, bad_xmm, bad_fp, bad_ip);
+    if (first_bad_ip.recorded)
+        fprintf(stderr, "First exception address mismatch: code=%#lx RIP=%p record=%p expected=%p\n",
+                first_bad_ip.code, (void *)first_bad_ip.ip, (void *)first_bad_ip.record_address,
+                (void *)first_bad_ip.expected);
+    if (!result) puts("PASS: divide/access/INT3/UD2 exception addresses, GPR/XMM/FP context and register restoration survived all tested stages");
     return result;
 }

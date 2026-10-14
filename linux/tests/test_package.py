@@ -7,6 +7,7 @@ import shutil
 import tempfile
 import unittest
 import sys
+import zipfile
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -48,6 +49,29 @@ class PackageTests(unittest.TestCase):
         self.assertEqual((self.game / "winmm.dll").read_bytes(), b"original mod")
         self.assertEqual((self.game / "unrelated.save").read_bytes(), b"save")
         self.assertFalse((self.game / manage.BACKUP).exists())
+
+    def test_stage_uses_pe_unixlib_without_legacy_elf_builtin(self):
+        build = self.root / "build"
+        for name in ("d3d12.dll", "d3d12core.dll", "x86_64-windows/amdhip64_7.dll",
+                     "x86_64-unix/amdhip64_7.so", "x86_64-unix/libamdnr_signal_guard.so",
+                     "x86_64-unix/amdhip64_7.dll.so"):
+            path = build / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(name.encode())
+        compiler = self.root / "compiler.dll"
+        compiler.write_bytes(b"MZ fixture")
+        archive = self.root / "release.zip"
+        with zipfile.ZipFile(archive, "w") as release:
+            release.writestr("OptiScaler.ini", "[DlssNr]\nEnabled=false\nNrBackend=lmxxf\n")
+            for name in ("OptiScaler.dll", "LmxxfNrRuntime.dll", "LmxxfNrRuntime.pak"):
+                release.writestr(name, name)
+        staged = self.root / "staged"
+        with patch.dict(manage.RELEASES, {manage.sha(archive): "test"}):
+            manage.stage(archive, compiler, staged, build, None)
+        unix = staged / "amdnr-linux/x86_64-unix"
+        self.assertEqual((unix / "amdhip64_7.so").read_bytes(), b"x86_64-unix/amdhip64_7.so")
+        self.assertFalse((unix / "amdhip64_7.dll.so").exists())
+        self.assertTrue((staged / "amdnr-linux/x86_64-windows/amdhip64_7.dll").is_file())
 
     def test_modified_file_requires_explicit_restore(self):
         manage.install(self.package, self.game)
@@ -177,6 +201,13 @@ class PackageTests(unittest.TestCase):
         self.assertEqual(after["LD_LIBRARY_PATH"], str(rocm) + ":" + str(self.bundle / "x86_64-unix") + ":/existing")
         self.assertEqual(after["LD_PRELOAD"], "libamdnr_signal_guard.so:overlay.so")
         self.assertEqual(after["AMDNR_HIP_LIBRARY"], str(rocm / "libamdhip64.so.7"))
+
+    def test_environment_rejects_legacy_elf_builtin(self):
+        legacy = self.bundle / "x86_64-unix/amdhip64_7.dll.so"
+        legacy.write_bytes(b"old Wine ELF builtin")
+        with self.assertRaisesRegex(ValueError, "Legacy ELF HIP bridge"):
+            launch.environment(self.bundle, {})
+        self.assertEqual(legacy.read_bytes(), b"old Wine ELF builtin")
 
 if __name__ == "__main__":
     unittest.main()

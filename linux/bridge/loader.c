@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-#include "bridge.h"
+#include "native.h"
 #include <dlfcn.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -23,7 +23,6 @@ void amdnr_log(const char *format, ...)
 
 static void load_hip(void)
 {
-    amdnr_diagnostics_init();
     const char *override = getenv("AMDNR_HIP_LIBRARY");
     if (override && *override)
         library = dlopen(override, RTLD_NOW | RTLD_LOCAL);

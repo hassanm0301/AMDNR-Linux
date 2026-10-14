@@ -3,22 +3,12 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-
-_Static_assert(sizeof(void *) == 8, "The bridge requires x86-64");
-_Static_assert(sizeof(hipDeviceProp_t) == 1472, "HIP R0600 ABI changed");
-_Static_assert(offsetof(hipDeviceProp_t, luid) == 272, "HIP LUID ABI changed");
-_Static_assert(offsetof(hipDeviceProp_t, gcnArchName) == 1160, "HIP architecture ABI changed");
-_Static_assert(sizeof(hipExternalMemoryHandleDesc) == 104, "HIP memory ABI changed");
-_Static_assert(sizeof(hipExternalSemaphoreSignalParams) == 144, "HIP fence ABI changed");
-_Static_assert(sizeof(hipExternalSemaphoreWaitParams) == 144, "HIP fence ABI changed");
 
 hipError_t WINAPI amdnr_hipGetDevicePropertiesR0600(hipDeviceProp_t *out, int device)
 {
     if (!out) return hipErrorInvalidValue;
-    REQUIRE_FN(hipGetDevicePropertiesR0600);
     hipDeviceProp_t native;
-    hipError_t result = hipGetDevicePropertiesR0600_native(&native, device);
+    hipError_t result = amdnr_native_hipGetDevicePropertiesR0600(&native, device);
     if (result) return result;
     result = amdnr_fix_identity(&native, device);
     if (result) return result;
@@ -40,7 +30,6 @@ hipError_t WINAPI amdnr_hipImportExternalMemory(hipExternalMemory_t *out,
 {
     if (!out || !description || !description->size) return hipErrorInvalidValue;
     *out = NULL;
-    REQUIRE_FN(hipImportExternalMemory);
     hipExternalMemoryHandleDesc native = *description;
     switch (description->type)
     {
@@ -53,16 +42,16 @@ hipError_t WINAPI amdnr_hipImportExternalMemory(hipExternalMemory_t *out,
     default:
         return hipErrorNotSupported;
     }
-    if (getenv("AMDNR_HIP_TRACE")) amdnr_log("memory handle=%p type=%d size=%llu flags=%u", description->handle.win32.handle, description->type, description->size, description->flags);
+    if (GetEnvironmentVariableA("AMDNR_HIP_TRACE", NULL, 0)) amdnr_log("memory handle=%p type=%d size=%llu flags=%u", description->handle.win32.handle, description->type, description->size, description->flags);
     int fd = amdnr_vulkan_fd(description->handle.win32.handle, description->size);
 
     if (fd < 0) return hipErrorInvalidHandle;
     memset(&native.handle, 0, sizeof(native.handle));
     native.type = hipExternalMemoryHandleTypeOpaqueFd;
     native.handle.fd = fd;
-    hipError_t result = hipImportExternalMemory_native(out, &native);
+    hipError_t result = amdnr_native_hipImportExternalMemory(out, &native);
     /* ROCm duplicates the imported descriptor; unlike Vulkan it does not consume it. */
-    close(fd);
+    amdnr_native_close_fd(fd);
     if (result) amdnr_log("HIP memory import failed: %d", result);
     return result;
 }
@@ -100,7 +89,6 @@ hipError_t WINAPI amdnr_hipModuleLoad(hipModule_t *out, const char *path)
 {
     if (!out || !path) return hipErrorInvalidValue;
     *out = NULL;
-    REQUIRE_FN(hipModuleLoadData);
     /* Read with Win32, so C:\\, Z:\\, relative paths, and non-ASCII paths use
      * exactly the same namespace as the Windows neural runtime. */
     HANDLE file = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
@@ -113,7 +101,7 @@ hipError_t WINAPI amdnr_hipModuleLoad(hipModule_t *out, const char *path)
     DWORD read = 0;
     BOOL ok = ReadFile(file, data, (DWORD)size.QuadPart, &read, NULL);
     CloseHandle(file);
-    hipError_t result = ok && read == size.QuadPart ? hipModuleLoadData_native(out, data) : hipErrorInvalidValue;
+    hipError_t result = ok && read == size.QuadPart ? amdnr_native_hipModuleLoadData(out, data) : hipErrorInvalidValue;
     free(data);
     return result;
 }

@@ -353,7 +353,9 @@ This fork adds an experimental Linux ROCm bridge for lmxxf Neural Rendering.
 **Build, install, restore, and test instructions: [linux/README.md](linux/README.md).**
 Neural rendering is verified in a short The Witcher 3 DX12 gameplay session on RX 9070 XT
 with Proton-Wineland 11.0; automated tests also pass on GE-Proton11-9. Compatibility remains
-experimental; Stellar Blade failed earlier tests and is not yet validated with the final bridge.
+experimental. Stellar Blade now passes a short gameplay test with GE-Proton11-9
+and the PE/Unixlib bridge, with normal-looking output and fresh neural composition
+confirmed. Both games use their original Steam prefixes and existing saves.
 Stock Proton does not provide HIP by itself: use the bridge, private ROCm libraries, and
 patched vkd3d-proton together.
 

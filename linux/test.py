@@ -13,11 +13,14 @@ ROOT = Path(__file__).resolve().parent
 def windows(path):
     return "Z:" + str(path.resolve()).replace("/", "\\")
 
-def run(command, env, directory, log, timeout=180, expect_pass=False):
+def run(command, env, directory, log, timeout=180, expect_pass=False, allow_skip=False):
     with log.open("w") as output:
         result = subprocess.run([str(x) for x in command], env=env, cwd=directory,
                                 stdout=output, stderr=subprocess.STDOUT, timeout=timeout)
     text = log.read_text(errors="replace")
+    if allow_skip and result.returncode == 77 and "SKIP:" in text:
+        print(next(line for line in reversed(text.splitlines()) if "SKIP:" in line), flush=True)
+        return
     if result.returncode or (expect_pass and "PASS:" not in text):
         raise RuntimeError(f"Test failed (exit {result.returncode}): {log}\n" + "\n".join(text.splitlines()[-25:]))
     if expect_pass:
@@ -66,6 +69,9 @@ def main():
     bundle = work / "amdnr-linux"
     if bundle.exists():
         restore_prefixes(bundle)
+        # Old test bundles used an ELF builtin. Do not retain a fallback that
+        # would disable Wine syscall dispatch when testing the PE/Unixlib bridge.
+        (bundle / "x86_64-unix/amdhip64_7.dll.so").unlink(missing_ok=True)
     shutil.copytree(package / "amdnr-linux", bundle, dirs_exist_ok=True,
                     ignore=shutil.ignore_patterns("prefixes.*", "prefix-backups"))
     for name in ("d3d12.dll", "d3d12core.dll", "d3dcompiler_47.dll"):
@@ -80,7 +86,7 @@ def main():
                     ("Menu", "OverlayMenu"): "true", ("Spoofing", "Dxgi"): "true",
                     ("Spoofing", "Vulkan"): "true", ("Hotfix", "CheckForUpdate"): "false"}
         host_config(package / "OptiScaler.ini", work / "OptiScaler.ini", settings)
-    for name in ("hip_smoke.exe", "exception_smoke.exe", "exception_context.exe", "compute.hsaco", "d3d12_interop.exe", "neural_smoke.exe", "host_shaders.exe"):
+    for name in ("syscall_dispatch.exe", "hip_smoke.exe", "exception_smoke.exe", "exception_context.exe", "compute.hsaco", "d3d12_interop.exe", "neural_smoke.exe", "host_shaders.exe"):
         shutil.copy2(build / name, work / name)
     if args.host_pipeline:
         shutil.copy2(build / "host_neural.exe", work / "host_neural.exe")
@@ -102,6 +108,8 @@ def main():
     prepare_prefix(bundle, prefix)
     wine = proton / "files/bin/wine"
     try:
+        run([wine, work / "syscall_dispatch.exe"], env, work, work / "syscall_dispatch.log",
+            expect_pass=True, allow_skip=True)
         for name, arguments in (
             ("exception_smoke", []),
             ("exception_context", [windows(work / "compute.hsaco")]),

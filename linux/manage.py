@@ -44,7 +44,7 @@ def stage(archive, compiler, output, build, rocm):
         raise ValueError("Expected a pinned, unmodified AMDNR release archive; checksum mismatch.")
     release_url = f"https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha{version}/AMDNR-v{version}.zip"
     inputs = [compiler, build / "d3d12.dll", build / "d3d12core.dll",
-              build / "x86_64-unix/amdhip64_7.dll.so", build / "x86_64-windows/amdhip64_7.dll",
+              build / "x86_64-unix/amdhip64_7.so", build / "x86_64-windows/amdhip64_7.dll",
               build / "x86_64-unix/libamdnr_signal_guard.so"]
     for path in inputs:
         if not path.is_file():
@@ -71,7 +71,7 @@ def stage(archive, compiler, output, build, rocm):
             shutil.copy2(build / name, target / name)
         shutil.copy2(compiler, target / "d3dcompiler_47.dll")
         bundle = target / "amdnr-linux"
-        for arch, name in (("x86_64-unix", "amdhip64_7.dll.so"), ("x86_64-windows", "amdhip64_7.dll")):
+        for arch, name in (("x86_64-unix", "amdhip64_7.so"), ("x86_64-windows", "amdhip64_7.dll")):
             (bundle / arch).mkdir(parents=True)
             shutil.copy2(build / arch / name, bundle / arch / name)
         shutil.copy2(build / "x86_64-unix/libamdnr_signal_guard.so", bundle / "x86_64-unix/libamdnr_signal_guard.so")

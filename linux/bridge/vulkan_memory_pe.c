@@ -1,11 +1,12 @@
-/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* SPDX-License-Identifier: GPL-3.0-or-later
+ * PE side of Wine shared-memory import. Keep Windows calls and Wine Vulkan
+ * objects here; only native handle export runs through the Unix library. */
 #include "bridge.h"
 #define VK_NO_PROTOTYPES
 #define VK_USE_PLATFORM_WIN32_KHR
 #include <vulkan/vulkan.h>
 #include <dxgi1_4.h>
 #include <d3d12.h>
-#include <dlfcn.h>
 #include <string.h>
 
 /* vkd3d-proton's ID3D12DeviceExt ABI. GetVulkanHandles is the first method
@@ -38,12 +39,11 @@ static int read_header(uint64_t address, uint64_t header[2])
  * header, also used by d4r's Wine bridge. Refuse an unfamiliar layout. */
 int amdnr_vulkan_fd(HANDLE handle, uint64_t size)
 {
-    NATIVE_FN(hipGetDevice);
-    NATIVE_FN(hipGetDevicePropertiesR0600);
     int ordinal, fd = -1;
     hipDeviceProp_t properties;
-    if (!hipGetDevice_native || !hipGetDevicePropertiesR0600_native || hipGetDevice_native(&ordinal) ||
-        hipGetDevicePropertiesR0600_native(&properties, ordinal) || amdnr_fix_identity(&properties, ordinal)) return -1;
+    if (amdnr_native_hipGetDevice(&ordinal) ||
+        amdnr_native_hipGetDevicePropertiesR0600(&properties, ordinal) ||
+        amdnr_fix_identity(&properties, ordinal)) return -1;
     IDXGIFactory4 *factory = NULL;
     IDXGIAdapter1 *adapter = NULL;
     ID3D12Device *d3d12 = NULL;
@@ -121,16 +121,11 @@ int amdnr_vulkan_fd(HANDLE handle, uint64_t size)
         read_header((uint64_t)memory, memory_object) && device_object[0] && memory_object[0] &&
         device_object[1] == (uint64_t)(uintptr_t)device && memory_object[1] == (uint64_t)memory)
     {
-        typedef void *(*native_get_proc)(void *, const char *);
-        typedef int (*native_get_fd)(void *, const VkMemoryGetFdInfoKHR *, int *);
-        void *vulkan = dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
-        native_get_proc native_proc = vulkan ? (native_get_proc)dlsym(vulkan, "vkGetDeviceProcAddr") : NULL;
-        void *native_device = (void *)(uintptr_t)device_object[0];
-        native_get_fd get_fd = native_proc ? (native_get_fd)native_proc(native_device, "vkGetMemoryFdKHR") : NULL;
-        VkMemoryGetFdInfoKHR fi = {.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR,
-            .memory = (VkDeviceMemory)memory_object[0], .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT};
-        if (get_fd && get_fd(native_device, &fi, &fd)) fd = -1;
-        if (vulkan) dlclose(vulkan);
+        /* Only native handles cross the Unix-call boundary. The native
+         * helper exports an fd while these borrowed Wine objects and their
+         * owning D3D12 device remain alive. It performs no Win32 calls. */
+        if (amdnr_native_vulkan_fd(device_object[0], memory_object[0], &fd) || fd < 0)
+            fd = -1;
     }
     else amdnr_log("unsupported Wine Vulkan object ABI; cannot export HIP memory");
     free_memory(device, memory, NULL);

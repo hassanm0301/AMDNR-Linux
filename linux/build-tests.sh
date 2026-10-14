@@ -10,6 +10,8 @@ mkdir -p "$out"
     "$root/tests/exception_smoke.c" -o "$out/exception_smoke.exe"
 "${MINGW_CC:-x86_64-w64-mingw32-gcc}" -std=c11 -O2 -Wall -Wextra -Werror -static \
     "$root/tests/exception_context.c" -o "$out/exception_context.exe"
+"${MINGW_CC:-x86_64-w64-mingw32-gcc}" -std=c11 -O2 -Wall -Wextra -Werror -static -municode \
+    "$root/tests/syscall_dispatch.c" -o "$out/syscall_dispatch.exe"
 "${MINGW_CXX:-x86_64-w64-mingw32-g++}" -std=c++17 -O2 -Wall -Wextra -static -I"$rocm/include" \
     "$root/tests/d3d12_interop.cpp" -ld3d12 -ldxgi -ldxguid -o "$out/d3d12_interop.exe"
 "${MINGW_CXX:-x86_64-w64-mingw32-g++}" -std=c++17 -O2 -Wall -Wextra -static -municode \
