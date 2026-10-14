@@ -350,7 +350,8 @@ the host refuses it). The capture host is AMDNR's own build, downloaded from AMD
 ## Linux / Proton (Steam Deck, desktop Linux)
 
 This fork adds an experimental Linux ROCm bridge for lmxxf Neural Rendering.
-**Build, install, restore, and test instructions: [linux/README.md](linux/README.md).**
+**Prebuilt Linux release: [download and installation guide](linux/INSTALL.md).**
+Build and test details: [linux/README.md](linux/README.md).
 Neural rendering is verified in a short The Witcher 3 DX12 gameplay session on RX 9070 XT
 with Proton-Wineland 11.0; automated tests also pass on GE-Proton11-9. Compatibility remains
 experimental. Stellar Blade now passes a short gameplay test with GE-Proton11-9

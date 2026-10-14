@@ -106,7 +106,9 @@ def stage(archive, compiler, output, build, rocm):
         # alongside our binaries; proprietary model/runtime assets stay separate.
         source = bundle / "source/linux"
         source.mkdir(parents=True)
-        for directory in ("bridge", "patches", "tests"):
+        for directory in ("bridge", "patches", "tests", "licenses"):
+            if not (ROOT / directory).is_dir():
+                continue
             shutil.copytree(ROOT / directory, source / directory,
                             ignore=shutil.ignore_patterns("__pycache__"))
         for path in ROOT.iterdir():
@@ -129,8 +131,14 @@ def stage(archive, compiler, output, build, rocm):
             "The shader compiler is supplied from the user's own installation.\n"
             "See Licenses and amdnr-linux/rocm/licenses for third-party terms.\n")
         shutil.copy2(ROOT.parent / "LICENSE", bundle / "LICENSE")
-        if (build / "vkd3d-proton-COPYING").exists():
-            shutil.copy2(build / "vkd3d-proton-COPYING", bundle / "vkd3d-proton-COPYING")
+        for name in ("COPYING", "LICENSE", "AUTHORS"):
+            notice = build / ("vkd3d-proton-" + name)
+            if notice.exists():
+                shutil.copy2(notice, bundle / notice.name)
+        if (ROOT / "licenses").is_dir():
+            shutil.copytree(ROOT / "licenses", bundle / "licenses")
+        if (build / "vkd3d-licenses").is_dir():
+            shutil.copytree(build / "vkd3d-licenses", bundle / "licenses/vkd3d-proton")
         target.rename(output)
     print(f"Staged {output}")
 

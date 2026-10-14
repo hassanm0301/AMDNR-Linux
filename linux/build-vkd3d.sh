@@ -28,5 +28,22 @@ ninja -C "$source/build-amdnr" -j "${AMDNR_BUILD_JOBS:-8}"
 mkdir -p "$output"
 cp "$source/build-amdnr/libs/d3d12/d3d12.dll" "$output/d3d12.dll"
 cp "$source/build-amdnr/libs/d3d12core/d3d12core.dll" "$output/d3d12core.dll"
-cp "$source/COPYING" "$output/vkd3d-proton-COPYING"
+for notice in COPYING LICENSE AUTHORS; do
+    cp "$source/$notice" "$output/vkd3d-proton-$notice"
+done
+python3 - "$source" "$output/vkd3d-licenses" <<'PY'
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+source, output = map(Path, sys.argv[1:])
+for raw in subprocess.check_output(["git", "-C", str(source), "ls-files", "-z", "--recurse-submodules"]).split(b"\0"):
+    if not raw:
+        continue
+    path = Path(raw.decode())
+    if any(part.upper().startswith(("LICENSE", "COPYING", "NOTICE", "AUTHORS", "COPYRIGHT")) for part in path.parts):
+        target = output / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source / path, target)
+PY
 printf '%s\n' "$revision" > "$output/vkd3d-proton-revision"

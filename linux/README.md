@@ -6,6 +6,13 @@ The Windows lmxxf neural runtime calls a PE-format Wine builtin `amdhip64_7.dll`
 It reaches native Linux ROCm through a separate `amdhip64_7.so` and Wine's Unix-call
 dispatcher. The model and neural runtime are unmodified.
 
+**Installing a prebuilt release? Start with [INSTALL.md](INSTALL.md).** The
+[Linux v0.1.0 release](https://github.com/hassanm0301/AMD-NR---OptiScaler-rocm/releases/tag/linux-v0.1.0)
+includes the tested bridge and patched graphics binaries. Its setup helper
+downloads the pinned upstream runtime/model and private ROCm dependencies;
+you supply a native shader compiler from your own game. The build tools below
+are needed only when compiling from source or running GPU tests.
+
 **Status: working in tested games; experimental compatibility.** Stellar Blade
 now loads the player's existing Steam save and runs neural rendering on RX 9070 XT
 with GE-Proton11-9. The player confirmed normal-looking gameplay, and fresh model
@@ -170,6 +177,10 @@ suite checks exit status and an explicit success marker for every executable:
    baseline, and fresh logs proving neural output reached composition. It loads
    the runtime dependency before graphics initialization; all rendering calls go
    through the host's NGX exports, without direct neural API calls.
+8. A CPU-only direct Windows system-call regression checks the caller, an
+   existing thread and a new thread before/after loading the bridge. It requires
+   an exact recognized Wine/Linux stub and explicitly skips unsupported layouts;
+   a skip is never reported as a pass. The old ELF bridge fails this comparison.
 
 Recorded passing configuration: Arch Linux, RX 9070 XT, GE-Proton11-9,
 private ROCm 7.2.4, AMDNR 0.3.4.2 and 0.3.5.5R4 (60 neural frames each),
@@ -262,6 +273,27 @@ capture remains supported, but capturing external fence waits/signals is rejecte
 The bridge is deliberately scoped to the runtime's HIP API and D3D12 shared
 buffers/fences. It is not a general replacement for every Windows ROCm API or
 external memory/semaphore handle type.
+
+## Producing release assets
+
+The prebuilt add-on is assembled from an already tested package. Commit all
+source and documentation changes first, then run:
+
+```sh
+python3 linux/package-release.py --version 0.1.0 \
+  --package linux/build/package \
+  --vkd3d-source linux/deps/vkd3d-proton \
+  --output linux/build/release-v0.1.0
+```
+
+The vkd3d checkout must be at the pinned revision with exactly the shared-buffer
+patch applied and matching initialized submodules. The packager checks those
+conditions, copies the five tested binaries without rebuilding them, records
+their hashes and the fork commit, and creates a separate complete corresponding
+graphics-source archive. It includes dependency notices with the binaries and
+excludes downloaded upstream assets, shader compilers, ROCm binaries, prefixes,
+game files, and logs. Publish both archives, `INSTALL.md`, and `SHA256SUMS` together.
+See [RELEASE-LICENSES.md](RELEASE-LICENSES.md) for distribution details.
 
 ## Troubleshooting
 
