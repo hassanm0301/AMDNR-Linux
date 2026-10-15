@@ -1,3 +1,78 @@
+# Linux v0.2.2-preview — Synchronization and compatibility fixes
+
+Local development preview. Existing game installations and saves were not
+changed, and no games were launched during this optimization pass. The bundled
+host/model/runtime remain AMDNR 0.3.5.5R4; the Linux bridge is rebuilt.
+
+## Improvements
+
+- Batch external-fence operations into one native callback per API call. Already
+  completed waits avoid event registration, and device removal is reported as
+  an error before/after waiting. Full-batch validation, duplicate handles and
+  queued-operation ownership remain covered by the GPU regression test.
+- Discover game executables without walking helper, backup and bundled-source
+  trees. Recognize Crash Bandicoot executables instead of treating every name
+  beginning with `crash` as a crash reporter.
+- Detect running Wine games using relative and DOS executable names before
+  changing files. Resume interrupted prefix setup and restore missing owned
+  DLLs while preserving original files and refusing modified files or redirected
+  paths.
+- Support preview versions consistently in the launcher, installation records,
+  and upgrade ordering. Automatic update discovery still offers stable releases.
+- Record reproducible benchmark data and binary hashes. Failed setup, failed
+  shutdown and skipped subchecks remain visible in the result. A release can
+  attach validation only for the exact binaries tested; it no longer inherits
+  gameplay claims from an earlier release automatically.
+
+## Measurements on RX 9070 XT
+
+Four alternating baseline/candidate pairs under GE-Proton11-9, with 32 warmup
+and 256 measured samples per fence test, gave these medians of run means:
+
+| Measurement | Previous bridge | Preview bridge |
+| --- | ---: | ---: |
+| Three-fence wait/signal round trip | 0.09463 ms | 0.04827 ms |
+| 1720×720 serialized neural pipeline with readback | 13.856 ms | 13.769 ms |
+
+The fence operation is about **49% cheaper**. The small whole-pipeline difference
+is within observed run-to-run variation; **no gameplay FPS increase is claimed**.
+All eight neural runs produced the same final RGB checksum, with full network,
+history input and controls enabled. Neural measurements exclude 10 warmup frames
+and contain 110 measured frames per run.
+
+Steam discovery across the nine installed games returned identical selections
+in 20 alternating warm-cache comparisons: median **34.230 ms → 12.745 ms**
+(about 63% less discovery time). This is launcher responsiveness, not game FPS.
+
+## Validation
+
+**172 Linux tests pass** under system Python 3.14 and bundled Python 3.12. The
+rebuilt bridge passed the full GE-Proton11-9 GPU suite, including 1,200 full-network
+1720×720 frames directly and 1,200 under the released host's hooks, alternating
+synchronous/asynchronous submission. The host's 720-frame NR-off/on comparison
+also passed with finite output and fresh neural composition counters.
+
+Proton-Wineland 11.0 (2026-09-30) passed the remaining GPU and host tests at 120
+neural frames per mode, with one explicit limitation: its direct D3D12 shared
+fence does not rewind from 202 to 201. The bridge matches that behavior; the
+rewind subcheck is marked skipped and the run is `passed_with_skips`. GE passed
+that subcheck. Tests also verify that their isolated Wine server exits.
+
+These are synthetic API and pipeline checks. No new game compatibility or
+long-duration gameplay stability is claimed.
+
+## Host-source fixes
+
+The 0.3.4.2 source snapshot now confirms fence completion before resize releases
+textures, retains resources when completion cannot be proved, and rejects the
+removed-device sentinel when retiring runtime sessions. Optional statistics
+allocation errors are handled and the exposure readback range covers all bytes
+read. Three CPU/compiler checks cover the changed resource code.
+
+These changes need a separate Windows/MSVC host rebuild and game validation;
+they are not active in the prebuilt 0.3.5.5R4 host. Improved discovery and API tests
+do not establish support for additional games.
+
 # Linux v0.2.1 — Compact launcher and Steam library fix
 
 **Download `NR-Linux-Manager-v0.2.1-linux-x86_64.tar.gz`, extract it, and open `Start.sh`.** Python and Qt are included. Select a game, close the game and Steam, and choose **Install neural rendering**. Launch through Steam using your existing Proton version and saves. Enable DLSS, FSR or XeSS in the game; **Insert** opens OptiScaler and **Home** toggles neural rendering.

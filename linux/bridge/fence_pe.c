@@ -17,12 +17,16 @@ struct fence {
     struct fence *next;
 };
 struct worker;
-struct job {
-    void *token;
+struct fence_operation {
     struct fence *fence;
     uint64_t value;
+};
+struct job {
+    void *token;
+    unsigned count;
     int signal;
     struct job *next;
+    struct fence_operation operations[];
 };
 struct worker {
     hipStream_t stream;
@@ -78,7 +82,7 @@ static void release_fence(struct fence *fence)
 static DWORD WINAPI worker_main(void *argument)
 {
     struct worker *worker = argument;
-    HANDLE event = CreateEventW(NULL, FALSE, FALSE, NULL);
+    HANDLE event = NULL;
     AcquireSRWLockExclusive(&worker->mutex);
     for (;;)
     {
@@ -91,22 +95,47 @@ static DWORD WINAPI worker_main(void *argument)
         ReleaseSRWLockExclusive(&worker->mutex);
 
         hipError_t error = amdnr_native_fence_wait(job->token);
-        HRESULT result = E_FAIL;
-        if (!error && job->signal)
-            result = ID3D12Fence_Signal(job->fence->object, job->value);
-        else if (!error && event)
+        hipError_t job_error = error;
+        for (unsigned i = 0; i < job->count; i++)
         {
-            result = ID3D12Fence_SetEventOnCompletion(job->fence->object, job->value, event);
-            if (SUCCEEDED(result) && WaitForSingleObject(event, INFINITE) != WAIT_OBJECT_0)
-                result = E_FAIL;
+            struct fence_operation *operation = &job->operations[i];
+            HRESULT result = E_FAIL;
+            if (!error && job->signal)
+                result = ID3D12Fence_Signal(operation->fence->object, operation->value);
+            else if (!error)
+            {
+                uint64_t completed = ID3D12Fence_GetCompletedValue(operation->fence->object);
+                /* D3D12 reports device removal as UINT64_MAX. Do not mistake
+                 * it for a successfully completed wait. A satisfied wait needs
+                 * no event registration or round trip through Wine's server. */
+                if (completed == UINT64_MAX) result = DXGI_ERROR_DEVICE_REMOVED;
+                else if (completed >= operation->value) result = S_OK;
+                else
+                {
+                    if (!event) event = CreateEventW(NULL, FALSE, FALSE, NULL);
+                    if (event)
+                    {
+                        result = ID3D12Fence_SetEventOnCompletion(operation->fence->object, operation->value, event);
+                        if (SUCCEEDED(result) && WaitForSingleObject(event, INFINITE) != WAIT_OBJECT_0)
+                            result = E_FAIL;
+                        /* Device removal also wakes registered fence events.
+                         * A lower ordinary value is allowed here: another
+                         * signal may have rewound the fence after this event
+                         * was legitimately satisfied. */
+                        if (SUCCEEDED(result) && ID3D12Fence_GetCompletedValue(operation->fence->object) == UINT64_MAX)
+                            result = DXGI_ERROR_DEVICE_REMOVED;
+                    }
+                }
+            }
+            release_fence(operation->fence);
+            if (error || FAILED(result))
+            {
+                amdnr_log("D3D12 fence %s failed: %#x", job->signal ? "signal" : "wait", (unsigned)result);
+                job_error = error ? error : hipErrorUnknown;
+            }
         }
-        release_fence(job->fence);
         AcquireSRWLockExclusive(&worker->mutex);
-        if (error || FAILED(result))
-        {
-            amdnr_log("D3D12 fence %s failed: %#x", job->signal ? "signal" : "wait", (unsigned)result);
-            worker->error = error ? error : hipErrorUnknown;
-        }
+        if (job_error) worker->error = job_error;
         /* Acknowledgement comes only after the actual COM operation and COM
          * reference release. Native stream progress never substitutes for this
          * acknowledgement. Preserve COM errors for HIP stream sync/destroy. */
@@ -179,8 +208,10 @@ hipError_t amdnr_fence_submit(const hipExternalSemaphore_t *semaphores, const vo
     hipError_t result = hipSuccess;
 
     /* Validate the entire batch before submitting any side effects. */
-    struct job **batch = calloc(count, sizeof(*batch));
-    if (!batch) return hipErrorOutOfMemory;
+    /* This bridge is x86-64: every unsigned count fits the size_t allocation. */
+    struct job *job = calloc(1, sizeof(*job) + count * sizeof(*job->operations));
+    if (!job) return hipErrorOutOfMemory;
+    job->signal = signal;
     AcquireSRWLockExclusive(&registry);
     for (unsigned i = 0; i < count; i++)
     {
@@ -190,12 +221,10 @@ hipError_t amdnr_fence_submit(const hipExternalSemaphore_t *semaphores, const vo
         struct fence *f = fences;
         while (f && (void *)f != (void *)semaphores[i]) f = f->next;
         if (!f) { result = hipErrorInvalidHandle; break; }
-        batch[i] = calloc(1, sizeof(**batch));
-        if (!batch[i]) { result = hipErrorOutOfMemory; break; }
         f->references++;
-        batch[i]->fence = f;
-        batch[i]->value = signal ? sp[i].params.fence.value : wp[i].params.fence.value;
-        batch[i]->signal = signal;
+        job->operations[i].fence = f;
+        job->operations[i].value = signal ? sp[i].params.fence.value : wp[i].params.fence.value;
+        ++job->count;
     }
     struct worker *worker = NULL;
     if (!result)
@@ -212,32 +241,33 @@ hipError_t amdnr_fence_submit(const hipExternalSemaphore_t *semaphores, const vo
         result = amdnr_native_hipStreamIsCapturing(stream, &capture);
         if (!result && capture != hipStreamCaptureStatusNone) result = hipErrorStreamCaptureUnsupported;
     }
-    for (unsigned i = 0; i < count; i++)
+    if (!result)
     {
-        struct job *job = batch[i];
-        if (!job) continue;
+        AcquireSRWLockExclusive(&worker->mutex);
+        result = worker->error;
+        if (!result && !worker->thread)
+        {
+            worker->thread = CreateThread(NULL, 0, worker_main, worker, 0, NULL);
+            if (!worker->thread) result = hipErrorOutOfMemory;
+        }
+        /* No GPU work can occur between members of one API batch. One callback
+         * can hold the stream until all their COM operations finish, avoiding
+         * a callback allocation and native/PE handshake per semaphore. */
+        if (!result) result = amdnr_native_fence_launch(stream, &job->token);
         if (!result)
         {
-            AcquireSRWLockExclusive(&worker->mutex);
-            result = worker->error;
-            if (!result && !worker->thread)
-            {
-                worker->thread = CreateThread(NULL, 0, worker_main, worker, 0, NULL);
-                if (!worker->thread) result = hipErrorOutOfMemory;
-            }
-            if (!result) result = amdnr_native_fence_launch(stream, &job->token);
-            if (!result)
-            {
-                if (worker->tail) worker->tail->next = job;
-                else worker->head = job;
-                worker->tail = job;
-                WakeAllConditionVariable(&worker->condition);
-            }
-            ReleaseSRWLockExclusive(&worker->mutex);
+            if (worker->tail) worker->tail->next = job;
+            else worker->head = job;
+            worker->tail = job;
+            WakeConditionVariable(&worker->condition);
         }
-        if (result) { release_fence(job->fence); free(job); }
+        ReleaseSRWLockExclusive(&worker->mutex);
     }
-    free(batch);
+    if (result)
+    {
+        for (unsigned i = 0; i < job->count; i++) release_fence(job->operations[i].fence);
+        free(job);
+    }
     if (worker) finish_worker_call(worker);
     return result;
 }

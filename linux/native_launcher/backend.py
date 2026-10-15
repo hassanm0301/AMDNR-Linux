@@ -21,6 +21,8 @@ import time
 import uuid
 from typing import Callable
 
+from .versions import version_key
+
 
 class BackendError(RuntimeError):
     pass
@@ -136,7 +138,8 @@ class LauncherBackend:
         self.addon_version = None
         if manifest.is_file():
             release = json.loads(manifest.read_text()).get("release", "")
-            if not isinstance(release, str) or not re.fullmatch(r"linux-v\d+\.\d+\.\d+", release):
+            if (not isinstance(release, str) or not release.startswith("linux-v") or
+                    version_key(release.removeprefix("linux-v")) is None):
                 raise BackendError("The Linux release manifest has an invalid version.")
             self.addon_version = release.removeprefix("linux-v")
 
@@ -210,9 +213,9 @@ class LauncherBackend:
             finally:
                 fcntl.flock(lock, fcntl.LOCK_UN)
 
-    def _running(self, game):
+    def _running(self, game, proc_root=Path("/proc")):
         found = []
-        for process in Path("/proc").iterdir():
+        for process in proc_root.iterdir():
             if not process.name.isdecimal() or int(process.name) == os.getpid():
                 continue
             try:
@@ -230,6 +233,16 @@ class LauncherBackend:
                         if candidate.is_absolute() and game in candidate.resolve().parents:
                             active = True
                             break
+                        if not candidate.is_absolute():
+                            # Wine's Unix executable is outside the game tree,
+                            # and its command line can use a relative or DOS
+                            # .exe name. The working directory still identifies
+                            # the installation that must remain untouched.
+                            working_directory = (process / "cwd").resolve(strict=True)
+                            if (working_directory == game or game in working_directory.parents or
+                                    game in (working_directory / candidate).resolve().parents):
+                                active = True
+                                break
                 if active:
                     found.append(int(process.name))
             except (OSError, ValueError):
@@ -251,7 +264,7 @@ class LauncherBackend:
                 raise ValueError("unsupported record")
             metadata = record.get("launcher", {})
             if not isinstance(metadata, dict) or (metadata.get("addon_version") is not None and
-                    not re.fullmatch(r"\d+\.\d+\.\d+", metadata["addon_version"])):
+                    version_key(metadata["addon_version"]) is None):
                 raise ValueError("invalid launcher version metadata")
             names = []
             for entry in record["files"]:
@@ -573,7 +586,8 @@ class LauncherBackend:
                 raise ConflictError("No managed installation was found. Use Install first.")
             installed_version = old.get("launcher", {}).get("addon_version") if old else None
             if installed_version:
-                if self.addon_version is None or tuple(map(int, self.addon_version.split("."))) < tuple(map(int, installed_version.split("."))):
+                candidate_version = version_key(self.addon_version)
+                if candidate_version is None or candidate_version < version_key(installed_version):
                     raise ConflictError(f"Linux addon {installed_version} is installed. This package is older or has no release version; a downgrade was refused.")
                 if mode == "repair" and self.addon_version != installed_version:
                     raise ConflictError(f"Repair requires Linux addon {installed_version}. Use Update to install {self.addon_version}.")

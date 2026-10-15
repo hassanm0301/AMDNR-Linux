@@ -91,3 +91,17 @@ class UpdateTests(unittest.TestCase):
         asset["browser_download_url"] = "https://untrusted.invalid/update.tar.gz"
         with patch.object(controller.urllib.request, "urlopen", return_value=io.BytesIO(json.dumps(entries).encode())):
             self.assertIsNone(controller.available_release("0.2.0"))
+
+    def test_preview_installs_receive_stable_updates_without_opting_into_previews(self):
+        def entry(version, prerelease=False):
+            tag = 'linux-v' + version
+            name = f'AMDNR-Linux-v{version}.tar.gz'
+            url = f'https://github.com/{controller.REPOSITORY}/releases/download/{tag}/{name}'
+            return dict(tag_name=tag, draft=False, prerelease=prerelease,
+                        assets=[dict(name=name, browser_download_url=url, digest='sha256:' + '1' * 64)])
+
+        entries = [entry('0.2.2'), entry('0.3.0-preview'), entry('0.4.0', prerelease=True)]
+        with patch.object(controller.urllib.request, 'urlopen', return_value=io.BytesIO(json.dumps(entries).encode())):
+            self.assertEqual(controller.available_release('0.2.2-preview')['version'], '0.2.2')
+        with patch.object(controller.urllib.request, 'urlopen', return_value=io.BytesIO(json.dumps(entries).encode())):
+            self.assertIsNone(controller.available_release('0.2.2'))

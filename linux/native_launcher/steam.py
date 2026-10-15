@@ -189,16 +189,24 @@ def resolve_exe_directory(root: Path) -> Path | None:
     if not root.is_dir():
         return None
     candidates = set()
-    excluded = {'engine', 'redist', '_commonredist', 'directx', 'vcredist', 'support'}
+    excluded = {'engine', 'redist', '_commonredist', 'directx', 'vcredist', 'support',
+                'amdnr-linux', '.amdnr-linux-backup', '.git'}
+    helpers = re.compile(r'(crash(?:report|pad|sender)|unitycrashhandler|unins\d*(?:$|[_.-])|'
+                         r'setup(?:$|[_.-])|ue[45]prereq|launcher(?:$|[_.-]))', re.I)
     try:
-        for path in root.rglob('*'):
-            if path.suffix.casefold() != '.exe' or path.is_symlink():
-                continue
-            parts = {part.casefold() for part in path.relative_to(root).parts[:-1]}
-            if parts & excluded or re.match(r'(crash|unins|setup|ue[45]prereq|launcher)', path.stem, re.I):
-                continue
-            if _x64_executable(path):
-                candidates.add(path.parent)
+        # Prune helper/source trees before descending instead of traversing all
+        # of their assets only to reject their executables afterwards.
+        for directory, children, files in os.walk(root, followlinks=False):
+            parent = Path(directory)
+            children[:] = [name for name in children if name.casefold() not in excluded]
+            for name in files:
+                if not name.casefold().endswith('.exe'):
+                    continue
+                path = parent / name
+                if path.is_symlink() or helpers.match(path.stem):
+                    continue
+                if _x64_executable(path):
+                    candidates.add(parent)
     except OSError:
         return None
     for name in ('x64_dx12', 'win64'):

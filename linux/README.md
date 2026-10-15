@@ -33,6 +33,12 @@ The source snapshot in
 `main/AMDNR-source` is 0.3.4.2; the package uses separately downloaded release
 binaries, not a rebuilt host.
 
+The development branch also contains host-source fixes for GPU resource lifetime
+on resize/device removal and optional statistics allocation. These require a
+separate Windows host rebuild and are **not active in the prebuilt 0.3.5.5R4 host**.
+Their CPU/compiler checks are described in
+[`main/AMDNR-source/tests/README.md`](../main/AMDNR-source/tests/README.md).
+
 ## Requirements
 
 - x86-64 Linux, an AMD GPU supported by the supplied neural model, and access to
@@ -165,7 +171,9 @@ suite checks exit status and an explicit success marker for every executable:
 2. A DXGI swapchain, shared D3D12 GPU buffers, 256 D3D12/HIP fence round trips,
    and 64 batches of three buffers transferring changing data in both directions.
    Checks import recreation, unequal timeline values, invalid arguments, and
-   unsupported external-fence graph capture.
+   unsupported external-fence graph capture. Additional tests cover multi-fence
+   batches, duplicate-handle rewinds, rejected batches without partial effects,
+   and destroying imports while their operations are still pending.
 3. The actual host temporal shader compiled using its absolute System32 path.
 4. Windows divide-by-zero, access-violation, INT3 and UD2 handling before, during, and after
    HIP initialization, module loading, GPU computation, and cleanup. A background
@@ -189,6 +197,49 @@ suite checks exit status and an explicit success marker for every executable:
    existing thread and a new thread before/after loading the bridge. It requires
    an exact recognized Wine/Linux stub and explicitly skips unsupported layouts;
    a skip is never reported as a pass. The old ELF bridge fails this comparison.
+
+Each run writes `results.json` with individual pass/skip/fail outcomes, settings,
+Proton version, and hashes of the rendering and bridge binaries. Tests use their
+own process groups; timeouts terminate that invocation's children. Shutdown is
+bounded and restricted to the isolated prefix. Setup and shutdown failures must
+not leave an earlier passing result behind.
+
+For repeatable performance comparisons after a complete correctness run:
+
+```sh
+./linux/test.py --proton /path/to/GE-Proton11-9 \
+  --package linux/build/package --output linux/build/benchmark \
+  --frames 120 --width 1720 --height 720 \
+  --full-network --history --controls --benchmark
+```
+
+The fence benchmark measures completed wait/signal round trips with one and
+three semaphores per call (32 warmup, 256 measured samples). The neural benchmark
+uses synchronous submission and excludes 10 warmup frames; it reports mean,
+median, p95, and a final RGB checksum. Its time includes input/output GPU copies,
+synchronization and readback completion, but excludes CPU pixel validation and
+logging. It is **not kernel time or game FPS**, and the synthetic workload is not
+a visual-quality test. Normal runs still exercise alternating synchronous and
+asynchronous submission. `--neural-only` skips the other correctness tests for
+repeated neural measurements; it is not a substitute for the complete suite.
+Use separate output directories for runs with and without host fixtures.
+
+The extended shared-fence test compares rewinds through the bridge with direct
+D3D12 operations on an exported/reopened fence. GE-Proton11-9 supports the tested
+rewind. Proton-Wineland 11.0 (2026-09-30) does not: both direct D3D12 and the bridge
+retain 202 after a signal to 201. That subcheck is explicitly skipped, the other
+tests continue, and the report records `passed_with_skips`. This is a limitation
+of that runner's shared-fence behavior; it is not new game-validation evidence.
+
+Use several alternating baseline/candidate runs with the same package assets,
+resolution, flags, Proton version and an idle GPU. Keep quality-affecting settings
+unchanged. The shipped runtime already enables its exact-output C32w, FastK and
+L37/L39/L41 kernel paths by default; reducing network size or enabling fast history
+changes the quality tradeoff and should be evaluated separately.
+
+`package-release.py --validation-report /path/to/results.json` attaches a compact
+automated-validation record only when every shipped binary matches that report.
+It omits local paths and does not carry earlier gameplay claims onto a new build.
 
 Recorded passing configuration: Arch Linux, RX 9070 XT, GE-Proton11-9,
 private ROCm 7.2.4, AMDNR 0.3.4.2 and 0.3.5.5R4 (60 neural frames each),

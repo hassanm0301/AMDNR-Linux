@@ -7,10 +7,12 @@
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
+#include <algorithm>
+#include <numeric>
 #include <vector>
 #include "../../main/AMDNR-source/optiscaler/dlssnr/lmxxf/runtime/LmxxfNrApi.h"
 #define HR(call) do { HRESULT rc = (call); if (FAILED(rc)) { std::fprintf(stderr, "%s: %#lx\n", #call, (unsigned long)rc); return 1; } } while (0)
-#define NR(call) do { std::printf("%s\n", #call); std::fflush(stdout); int rc = (call); if (rc) { char error[4096]{}; api.GetLastError(error, sizeof(error)); std::fprintf(stderr, "%s: %d %s\n", #call, rc, error); return 1; } } while (0)
+#define NR(call) do { if (!benchmark) { std::printf("%s\n", #call); std::fflush(stdout); } int rc = (call); if (rc) { char error[4096]{}; api.GetLastError(error, sizeof(error)); std::fprintf(stderr, "%s: %d %s\n", #call, rc, error); return 1; } } while (0)
 static uint16_t half(float v) {
     uint32_t bits; std::memcpy(&bits, &v, 4);
     return uint16_t(((bits >> 16) & 0x8000) | ((((bits >> 23) & 255) - 112) << 10) | ((bits >> 13) & 1023));
@@ -27,10 +29,16 @@ static bool setting(const char *name) {
 }
 int wmain(int argc, wchar_t **argv)
 {
-    if (argc < 3 || argc > 6) { std::fputs("usage: neural_smoke.exe LmxxfNrRuntime.dll LmxxfNrRuntime.pak [frames [width height]]\n", stderr); return 1; }
+    const bool benchmark = setting("AMDNR_TEST_BENCHMARK");
+    if (argc < 3 || argc > 6 || argc == 5) { std::fputs("usage: neural_smoke.exe LmxxfNrRuntime.dll LmxxfNrRuntime.pak [frames [width height]]\n", stderr); return 1; }
     unsigned frames = argc >= 4 ? _wtoi(argv[3]) : 3;
     unsigned width = argc == 6 ? _wtoi(argv[4]) : 640, height = argc == 6 ? _wtoi(argv[5]) : 360;
     if (frames < 3 || frames > 10000 || width < 64 || height < 64 || width > 1920 || height > 1080) return 1;
+    const unsigned warmup = 10;
+    if (benchmark && frames < 30) { std::fputs("Benchmark requires at least 30 frames (10 warmup)\n", stderr); return 1; }
+    LARGE_INTEGER frequency{};
+    if (benchmark && (!QueryPerformanceFrequency(&frequency) || !frequency.QuadPart)) return 1;
+    std::vector<double> timings;
     // Exercise the released host's real DXGI/D3D12/Vulkan hooks when requested.
     // Keep it loaded until process exit: its hooks are process-wide.
     wchar_t host_path[32768];
@@ -66,6 +74,7 @@ int wmain(int argc, wchar_t **argv)
     HR(device->CreateCommandQueue(&qd, IID_PPV_ARGS(&queue)));
     ID3D12Fence *fence = nullptr; HR(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)));
     HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (!event) return 1;
     UINT64 fence_value = 0;
     auto drain = [&] {
         if (FAILED(queue->Signal(fence, ++fence_value)) || FAILED(fence->SetEventOnCompletion(fence_value, event)) ||
@@ -125,6 +134,7 @@ int wmain(int argc, wchar_t **argv)
     void *context = nullptr; LmxxfNrCreateInfo ci{}; ci.struct_size = sizeof(ci); ci.device = device; ci.queue = queue; ci.assets_directory = argv[2];
     NR(api.Create(&ci, &context)); NR(api.PrepareSession(context));
     std::vector<float> reference;
+    uint64_t output_hash = 14695981039346656037ull;
     for (unsigned frame = 0; frame < frames; frame++) {
         LmxxfNrFrameInfo fi{}; fi.struct_size = 128; fi.session_id = 1; fi.frame_id = fi.list_generation = frame + 1;
         fi.command_list = list; fi.color = color; fi.color_width = width; fi.color_height = height;
@@ -145,9 +155,14 @@ int wmain(int argc, wchar_t **argv)
             fi.control_style = 0.f;
         }
         LmxxfNrJob job{}; job.struct_size = sizeof(job);
+        // This measures the serialized validation pipeline, including GPU input/
+        // output copies and readback completion. It is NOT game FPS or kernel time.
+        // Use synchronous jobs to avoid the correctness test's 1 ms polling sleep.
+        LARGE_INTEGER start{}, end{};
+        if (benchmark) QueryPerformanceCounter(&start);
         NR(api.PrepareFrame(context, &fi, &job)); NR(api.RecordInputs(context, job.handle, list));
         submit(); drain(); reset();
-        if (frame % 2 && api.EnqueueHipAsync && api.OutputReady) {
+        if (!benchmark && frame % 2 && api.EnqueueHipAsync && api.OutputReady) {
             NR(api.EnqueueHipAsync(context, job.handle, queue));
             DWORD start = GetTickCount(); uint32_t ready = 0;
             while (!ready) {
@@ -168,10 +183,20 @@ int wmain(int argc, wchar_t **argv)
         std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter); list->ResourceBarrier(1, &barrier);
         submit(); drain();
         NR(api.Retire(context, job.handle));
+        if (benchmark) {
+            QueryPerformanceCounter(&end);
+            if (frame >= warmup) timings.push_back(1000.0 * (end.QuadPart - start.QuadPart) / frequency.QuadPart);
+        }
         HR(readback->Map(0, nullptr, reinterpret_cast<void **>(&data)));
         double sum = 0, delta = 0; unsigned changed = 0; std::vector<float> values;
+        values.reserve(size_t(width) * height * 3);
         for (unsigned y = 0; y < height; y++) for (unsigned x = 0; x < width; x++) for (unsigned c = 0; c < 3; c++) {
-            float v = unhalf(reinterpret_cast<uint16_t *>(data + y * footprint.Footprint.RowPitch + x * 8)[c]);
+            uint16_t raw = reinterpret_cast<uint16_t *>(data + y * footprint.Footprint.RowPitch + x * 8)[c];
+            float v = unhalf(raw);
+            if (benchmark && frame + 1 == frames) {
+                output_hash = (output_hash ^ (raw & 255)) * 1099511628211ull;
+                output_hash = (output_hash ^ (raw >> 8)) * 1099511628211ull;
+            }
             if (!std::isfinite(v) || std::fabs(v) > 10000) { std::fputs("non-finite/out-of-range neural output\n", stderr); return 1; }
             if (frame) { double d = std::fabs(v - reference[values.size()]); delta += d; if (d > .001) changed++; }
             values.push_back(v); sum += v;
@@ -179,9 +204,19 @@ int wmain(int argc, wchar_t **argv)
         readback->Unmap(0, nullptr);
         if (!frame) reference = values;
         else if (changed < width * height / 100 || delta < 1) { std::fputs("neural output equals bypass\n", stderr); return 1; }
-        std::printf("frame=%u mean=%g mean_abs_change=%g changed_channels=%u\n", frame, sum / values.size(), delta / values.size(), changed);
-        char status[4096]{}; api.GetStatus(context, status, sizeof(status)); std::puts(status);
+        if (!benchmark || frame == 0 || frame + 1 == frames) {
+            std::printf("frame=%u mean=%g mean_abs_change=%g changed_channels=%u\n", frame, sum / values.size(), delta / values.size(), changed);
+            char status[4096]{}; NR(api.GetStatus(context, status, sizeof(status))); std::puts(status);
+        }
         reset();
+    }
+    if (benchmark) {
+        std::sort(timings.begin(), timings.end());
+        double mean = std::accumulate(timings.begin(), timings.end(), 0.0) / timings.size();
+        auto percentile = [&](double fraction) { return timings[size_t(std::ceil(fraction * timings.size())) - 1]; };
+        std::printf("BENCHMARK: {\"metric\":\"serialized_pipeline_readback_ms\",\"samples\":%zu,\"warmup\":%u,\"width\":%u,\"height\":%u,\"mean_ms\":%.6f,\"p50_ms\":%.6f,\"p95_ms\":%.6f,\"min_ms\":%.6f,\"max_ms\":%.6f,\"output_rgb_fnv1a64\":\"%016llx\"}\n",
+                    timings.size(), warmup, width, height, mean, percentile(.5), percentile(.95), timings.front(), timings.back(),
+                    static_cast<unsigned long long>(output_hash));
     }
     NR(api.Drain(context)); NR(api.Destroy(context));
     std::puts("PASS: real neural runtime produced finite changed frames on Linux");

@@ -77,6 +77,29 @@ class BackendTests(unittest.TestCase):
         self.backend.launch.prepare_prefix(self.game / "amdnr-linux", prefix)
         return prefix, original
 
+    def test_running_wine_game_detected_with_relative_and_dos_executables(self):
+        processes = self.root / 'processes'
+        processes.mkdir()
+        runner = self.root / 'wine64'
+        runner.write_bytes(b'Unix Wine runner')
+        (self.game / 'Binaries').mkdir()
+        for pid, argument in ((100001, b'Game.exe'), (100002, b'C:\\Games\\Game.exe'),
+                              (100003, b'Z:' + os.fsencode(self.game / 'Game.exe')),
+                              (100005, os.fsencode(self.game.name + '/Game.exe'))):
+            process = processes / str(pid)
+            process.mkdir()
+            (process / 'exe').symlink_to(runner)
+            working_directory = self.root if pid == 100005 else self.game / 'Binaries'
+            (process / 'cwd').symlink_to(working_directory, target_is_directory=True)
+            (process / 'cmdline').write_bytes(b'wine64\0' + argument + b'\0')
+        unrelated = processes / '100004'
+        unrelated.mkdir()
+        (unrelated / 'exe').symlink_to(runner)
+        (unrelated / 'cwd').symlink_to(self.root, target_is_directory=True)
+        (unrelated / 'cmdline').write_bytes(b'wine64\0Other.exe\0')
+        self.assertEqual(sorted(LauncherBackend._running(self.backend, self.game, processes)),
+                         [100001, 100002, 100003, 100005])
+
     def test_install_update_uninstall_preserve_originals_and_configuration(self):
         result = self.backend.install(self.game, self.a)
         self.assertEqual(result["status"], "installed")
@@ -365,6 +388,24 @@ class BackendTests(unittest.TestCase):
         self.assertIs(other.setup.manage, other.manage)
         self.assertEqual(self.backend.setup.ROOT, self.release / "linux")
         self.assertEqual(self.backend.manage.ROOT, self.release / "linux")
+
+    def test_preview_manifest_install_upgrade_and_downgrade_protection(self):
+        (self.release / 'RELEASE-MANIFEST.json').write_text(json.dumps({'release': 'linux-v0.2.2-preview'}))
+        loaded = LauncherBackend(self.release, self.root / 'cache', self.root / 'state')
+        self.assertEqual(loaded.addon_version, '0.2.2-preview')
+        self.backend.addon_version = loaded.addon_version
+        self.backend.install(self.game, self.a)
+        self.assertEqual(self.backend.inspect(self.game)['addon_version'], '0.2.2-preview')
+        self.backend.addon_version = '0.2.2-preview.2'
+        self.backend.update(self.game, self.b)
+        self.assertEqual(self.backend.inspect(self.game)['addon_version'], '0.2.2-preview.2')
+        self.backend.addon_version = '0.2.2'
+        self.backend.update(self.game, self.b)
+        before = snapshot(self.game)
+        self.backend.addon_version = '0.2.2-preview.10'
+        with self.assertRaisesRegex(ConflictError, 'downgrade'):
+            self.backend.update(self.game, self.a)
+        self.assertEqual(snapshot(self.game), before)
 
     def test_release_versions_reject_downgrade_and_repair_version_change(self):
         self.backend.addon_version = "0.2.0"

@@ -7,6 +7,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <algorithm>
+#include <vector>
 #define HR(call) do { HRESULT result = (call); if (FAILED(result)) { std::fprintf(stderr, "%s failed: %#lx\n", #call, (unsigned long)result); return 1; } } while (0)
 #define HIP(call) do { int result = (call); if (result) { std::fprintf(stderr, "%s failed: %d\n", #call, result); return 1; } } while (0)
 #define LOAD(name) auto name = reinterpret_cast<decltype(&::name)>(reinterpret_cast<void *>(GetProcAddress(hip, #name))); if (!name) { std::fprintf(stderr, "missing %s\n", #name); return 1; }
@@ -91,6 +93,142 @@ int main()
     invalid_wait.flags = 0;
     EXPECT(hipWaitExternalSemaphoresAsync(&semaphore, &invalid_wait, 1, stream), hipErrorStreamCaptureUnsupported);
     hipGraph_t graph = nullptr; HIP(hipStreamEndCapture(stream, &graph)); HIP(hipGraphDestroy(graph));
+    // One API call may contain several fences, including repeated handles.
+    // Validate the entire batch before any operation can change a timeline.
+    {
+        constexpr unsigned batch_size = 3;
+        ID3D12Fence *batch_fences[batch_size]{};
+        hipExternalSemaphore_t batch_semaphores[batch_size]{};
+        hipExternalSemaphoreSignalParams signals[batch_size]{};
+        hipExternalSemaphoreWaitParams waits[batch_size]{};
+        for (unsigned i = 0; i < batch_size; i++) {
+            HR(device->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&batch_fences[i])));
+            HANDLE handle = nullptr;
+            HR(device->CreateSharedHandle(batch_fences[i], nullptr, GENERIC_ALL, nullptr, &handle));
+            hipExternalSemaphoreHandleDesc imported{};
+            imported.type = hipExternalSemaphoreHandleTypeD3D12Fence;
+            imported.handle.win32.handle = handle;
+            HIP(hipImportExternalSemaphore(&batch_semaphores[i], &imported));
+            CloseHandle(handle);
+            signals[i].params.fence.value = 41 + i * 42;
+            waits[i].params.fence.value = signals[i].params.fence.value;
+        }
+        HIP(hipWaitExternalSemaphoresAsync(nullptr, nullptr, 0, stream));
+        HIP(hipSignalExternalSemaphoresAsync(nullptr, nullptr, 0, stream));
+        HIP(hipSignalExternalSemaphoresAsync(batch_semaphores, signals, batch_size, stream));
+        HIP(hipStreamSynchronize(stream));
+        for (unsigned i = 0; i < batch_size; i++)
+            if (batch_fences[i]->GetCompletedValue() != signals[i].params.fence.value) return 1;
+        HIP(hipWaitExternalSemaphoresAsync(batch_semaphores, waits, batch_size, stream));
+
+        hipExternalSemaphore_t invalid_batch[] = {batch_semaphores[0], invalid, batch_semaphores[2]};
+        for (auto &signal : signals) signal.params.fence.value = 999999;
+        EXPECT(hipSignalExternalSemaphoresAsync(invalid_batch, signals, batch_size, stream), hipErrorInvalidHandle);
+        signals[batch_size - 1].flags = 1;
+        EXPECT(hipSignalExternalSemaphoresAsync(batch_semaphores, signals, batch_size, stream), hipErrorInvalidValue);
+        signals[batch_size - 1].flags = 0;
+        // An incorrectly enqueued prefix would block stream synchronization.
+        waits[0].params.fence.value = 999999;
+        waits[batch_size - 1].flags = 1;
+        EXPECT(hipWaitExternalSemaphoresAsync(batch_semaphores, waits, batch_size, stream), hipErrorInvalidValue);
+        waits[batch_size - 1].flags = 0;
+        HIP(hipStreamSynchronize(stream));
+        for (unsigned i = 0; i < batch_size; i++)
+            if (batch_fences[i]->GetCompletedValue() != 41 + i * 42) {
+                std::fputs("rejected fence batch changed a timeline\n", stderr); return 1;
+            }
+        hipExternalSemaphore_t duplicate[] = {batch_semaphores[0], batch_semaphores[0]};
+        hipExternalSemaphoreSignalParams rewind[2]{};
+        rewind[0].params.fence.value = 202; rewind[1].params.fence.value = 201;
+        // Wine runners differ in their shared-fence rewind support. Compare
+        // against direct COM on a fresh shared fence to separate a bridge
+        // regression from an underlying runner limitation.
+        ID3D12Fence *rewind_control = nullptr, *rewind_import = nullptr;
+        HR(device->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&rewind_control)));
+        HANDLE rewind_handle = nullptr;
+        HR(device->CreateSharedHandle(rewind_control, nullptr, GENERIC_ALL, nullptr, &rewind_handle));
+        HR(device->OpenSharedHandle(rewind_handle, IID_PPV_ARGS(&rewind_import)));
+        CloseHandle(rewind_handle);
+        HR(rewind_import->Signal(202));
+        HRESULT rewind_result = rewind_import->Signal(201);
+        UINT64 direct_rewind = rewind_control->GetCompletedValue();
+        rewind_import->Release(); rewind_control->Release();
+        if (SUCCEEDED(rewind_result)) {
+            HIP(hipSignalExternalSemaphoresAsync(duplicate, rewind, 2, stream));
+            HIP(hipStreamSynchronize(stream));
+            UINT64 observed_rewind = batch_fences[0]->GetCompletedValue();
+            if (observed_rewind != direct_rewind) {
+                std::fprintf(stderr, "batched fence rewind differs from direct COM: direct %llu, bridge %llu (requested 202 -> 201)\n",
+                    static_cast<unsigned long long>(direct_rewind),
+                    static_cast<unsigned long long>(observed_rewind)); return 1;
+            }
+            if (direct_rewind != 201)
+                std::printf("SKIP: shared_fence_rewind: direct D3D12 Signal(202) -> Signal(201) observed %llu instead of 201; bridge matched; runner does not support this rewind\n",
+                    static_cast<unsigned long long>(direct_rewind));
+        } else {
+            std::printf("SKIP: shared_fence_rewind: direct D3D12 Signal(201) after Signal(202) failed with %#lx; bridge rewind not attempted\n",
+                static_cast<unsigned long>(rewind_result));
+        }
+        // Duplicate handles must still work when the runner has monotonic
+        // shared fences. Keep this assertion independent of the rewind probe.
+        rewind[0].params.fence.value = 303; rewind[1].params.fence.value = 304;
+        HIP(hipSignalExternalSemaphoresAsync(duplicate, rewind, 2, stream));
+        HIP(hipStreamSynchronize(stream));
+        UINT64 observed_duplicate = batch_fences[0]->GetCompletedValue();
+        if (observed_duplicate != 304) {
+            std::fprintf(stderr, "batched duplicate fence signals: expected 304, observed %llu\n",
+                static_cast<unsigned long long>(observed_duplicate)); return 1;
+        }
+
+        const char *benchmark = std::getenv("AMDNR_TEST_BENCHMARK");
+        if (benchmark && *benchmark && std::strcmp(benchmark, "0")) {
+            LARGE_INTEGER frequency{};
+            if (!QueryPerformanceFrequency(&frequency) || !frequency.QuadPart) return 1;
+            constexpr unsigned warmup = 32, samples = 256;
+            for (unsigned semaphores_per_call : {1u, batch_size}) {
+                std::vector<double> elapsed;
+                double total = 0;
+                for (unsigned sample = 0; sample < warmup + samples; sample++) {
+                    for (unsigned i = 0; i < semaphores_per_call; i++) {
+                        waits[i].params.fence.value = batch_fences[i]->GetCompletedValue();
+                        signals[i].params.fence.value = 10000 * semaphores_per_call + sample;
+                    }
+                    LARGE_INTEGER start{}, end{};
+                    QueryPerformanceCounter(&start);
+                    HIP(hipWaitExternalSemaphoresAsync(batch_semaphores, waits, semaphores_per_call, stream));
+                    HIP(hipSignalExternalSemaphoresAsync(batch_semaphores, signals, semaphores_per_call, stream));
+                    HIP(hipStreamSynchronize(stream));
+                    QueryPerformanceCounter(&end);
+                    if (sample >= warmup) {
+                        double milliseconds = 1000.0 * (end.QuadPart - start.QuadPart) / frequency.QuadPart;
+                        elapsed.push_back(milliseconds); total += milliseconds;
+                    }
+                }
+                std::sort(elapsed.begin(), elapsed.end());
+                std::printf("BENCHMARK: {\"metric\":\"fence_batch_roundtrip_ms\",\"semaphores_per_call\":%u,\"samples\":%u,\"warmup\":%u,\"mean_ms\":%.6f,\"p50_ms\":%.6f,\"p95_ms\":%.6f,\"min_ms\":%.6f,\"max_ms\":%.6f}\n",
+                    semaphores_per_call, samples, warmup, total / samples,
+                    elapsed[samples / 2], elapsed[(samples * 95) / 100], elapsed.front(), elapsed.back());
+            }
+        }
+
+        // Destroy imports while the first batch is waiting. Queued operations
+        // must retain every fence until the final native acknowledgement.
+        for (unsigned i = 0; i < batch_size; i++) {
+            waits[i].params.fence.value = 1000000 + i;
+            signals[i].params.fence.value = 2000000 + i;
+        }
+        HIP(hipWaitExternalSemaphoresAsync(batch_semaphores, waits, batch_size, stream));
+        HIP(hipSignalExternalSemaphoresAsync(batch_semaphores, signals, batch_size, stream));
+        for (unsigned i = 0; i < batch_size; i++) HIP(hipDestroyExternalSemaphore(batch_semaphores[i]));
+        for (unsigned i = 0; i < batch_size; i++) HR(batch_fences[i]->Signal(waits[i].params.fence.value));
+        HIP(hipStreamSynchronize(stream));
+        for (unsigned i = 0; i < batch_size; i++) {
+            if (batch_fences[i]->GetCompletedValue() != signals[i].params.fence.value) {
+                std::fputs("pending fence batch lost its references\n", stderr); return 1;
+            }
+            batch_fences[i]->Release();
+        }
+    }
     HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     for (unsigned round = 0; round < 256; round++) {
         // Values intentionally skip numbers: a raw Vulkan timeline is NOT the D3D12 timeline.
@@ -242,6 +380,6 @@ int main()
     HIP(hipFree(mapped)); HIP(hipDestroyExternalMemory(memory));
     CloseHandle(event); list->Release(); allocator->Release(); readback->Release(); shared->Release();
     fence->Release(); queue->Release(); device->Release(); adapter->Release(); factory->Release();
-    std::puts("PASS: 256 D3D12/HIP fence round trips, 64 bidirectional batches of 3 buffers with import recreation; invalid handles/flags and capture rejected");
+    std::puts("PASS: 256 D3D12/HIP fence round trips, 64 bidirectional batches of 3 buffers with import recreation; batched and duplicate fences, pending destruction; shared-fence rewind compared with direct COM (see any SKIP); invalid handles/flags and capture rejected");
     return 0;
 }

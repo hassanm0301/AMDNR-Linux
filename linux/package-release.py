@@ -42,6 +42,32 @@ def copy(source, target):
     shutil.copy2(source, target)
 
 
+def validation_metadata(report_path, package):
+    """Bind automated evidence to the shipped files without exporting local paths.
+
+    Gameplay coverage is described separately in release notes. A previous
+    release's game result must never silently certify newly built binaries.
+    """
+    if report_path is None:
+        return {"status": "not_attached", "scope": "No automated validation report supplied"}
+    report = json.loads(report_path.read_text())
+    if report.get("status") not in ("passed", "passed_with_skips"):
+        raise ValueError("Validation report did not pass")
+    hashes = report.get("binaries", {})
+    for original in BINARIES.values():
+        if hashes.get(original) != sha(package / original):
+            raise ValueError(f"Validation report binary mismatch: {original}")
+    tests = report.get("tests", [])
+    if not tests or any(test.get("status") not in ("passed", "passed_with_skips", "skipped") for test in tests):
+        raise ValueError("Validation report has missing or failed test results")
+    if not any(test.get("log") == "neural_smoke.log" and test.get("status") == "passed" for test in tests):
+        raise ValueError("Validation report has no successful neural test")
+    status = "passed_with_skips" if any(test["status"] in ("skipped", "passed_with_skips") for test in tests) else "passed"
+    return {"status": status, "scope": "Automated isolated GPU tests; not gameplay validation",
+            "checks": [{"log": Path(test["log"]).name, "status": test["status"]} for test in tests],
+            "binary_sha256": {name: hashes[name] for name in BINARIES.values()}}
+
+
 def archive(directory, output, epoch):
     with output.open("xb") as raw, gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=epoch) as zipped:
         with tarfile.open(fileobj=zipped, mode="w") as tar:
@@ -67,7 +93,8 @@ def archive(directory, output, epoch):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", required=True)
-    parser.add_argument("--package", type=Path, required=True, help="Exact game-validated local package")
+    parser.add_argument("--package", type=Path, required=True, help="Exact validated local package")
+    parser.add_argument("--validation-report", type=Path, help="results.json from linux/test.py for these exact binaries")
     parser.add_argument("--vkd3d-source", type=Path, required=True, help="Patched checkout with initialized submodules")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
@@ -77,6 +104,7 @@ def main():
         parser.error("Commit all release source/documentation changes before packaging")
     if args.output.exists():
         parser.error("Output directory already exists")
+    validation = validation_metadata(args.validation_report, args.package)
     source = args.vkd3d_source.resolve()
     if git(source, "rev-parse", "HEAD").decode().strip() != VKD3D_REVISION:
         parser.error("vkd3d-proton checkout is not at the pinned revision")
@@ -130,9 +158,7 @@ def main():
             "bridge_format": "Wine PE builtin plus native Unixlib",
             "upstream_amdnr": "0.3.5.5R4", "private_rocm": "7.2.4",
             "vkd3d_proton_commit": VKD3D_REVISION,
-            "tested_gpu": "Radeon RX 9070 XT (gfx1201)",
-            "tested_game": "Stellar Blade", "tested_proton": "GE-Proton11-9",
-            "validation": "Short gameplay with normal image, 3599 model frames and 3594 fresh composed outputs; automated GPU and regression tests passed",
+            "validation": validation,
             "excluded": ["upstream host/runtime/model", "Microsoft shader compiler", "ROCm binaries", "game files", "prefixes and user logs"],
             "binaries": {line.split("  ")[1]: line.split("  ")[0] for line in sums},
         }

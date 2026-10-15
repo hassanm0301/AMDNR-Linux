@@ -79,6 +79,7 @@ REQUIRED_FILES = ("RELEASE-MANIFEST.json", "LICENSE", "linux/launcher.py", "linu
                   "linux/manage.py", "linux/launch.py", "linux/fetch-rocm.py", "linux/run.sh",
                   "linux/native_launcher/app.py", "linux/native_launcher/controller.py",
                   "linux/native_launcher/backend.py", "linux/native_launcher/steam.py",
+                  "linux/native_launcher/versions.py",
                   "linux/native_launcher/__init__.py", "linux/native_launcher/requirements.txt",
                   "main/AMDNR-source/optiscaler/dlssnr/amd/TemporalStability.h",
                   "main/AMDNR-source/optiscaler/dlssnr/amd/SystemCompiler.h",
@@ -375,7 +376,7 @@ def main():
     parser.add_argument("--release-root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True, help="New .tar.gz archive")
     parser.add_argument("--cache", type=Path, default=HERE / "build/native-launcher-cache")
-    parser.add_argument("--version", default="0.2.1")
+    parser.add_argument("--version", default="0.2.2-preview")
     parser.add_argument("--keep-tree", type=Path, help="Also keep an extracted tree for desktop testing")
     args = parser.parse_args()
     if sys.version_info < (3, 12) or sys.platform != "linux" or platform.machine() != "x86_64":

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise installation against real temporary files, including failed copies."""
 import importlib.util
+import json
 import os
 from pathlib import Path
 import shutil
@@ -189,6 +190,97 @@ class PackageTests(unittest.TestCase):
         self.assertEqual(outside.read_bytes(), b"shared compiler")
         launch.restore_prefixes(self.bundle)
         self.assertEqual(dll.readlink(), outside)
+
+    def test_interrupted_prefix_copy_resumes_and_keeps_original_backup(self):
+        for original_kind in ('file', 'symlink', 'missing'):
+            with self.subTest(original_kind=original_kind):
+                prefix = self.root / ('prefix ' + original_kind)
+                dll = prefix / 'drive_c/windows/system32/d3dcompiler_47.dll'
+                dll.parent.mkdir(parents=True)
+                original = self.root / 'Wine compiler.dll'
+                original.write_bytes(b'original Wine compiler')
+                if original_kind == 'file':
+                    dll.write_bytes(original.read_bytes())
+                elif original_kind == 'symlink':
+                    dll.symlink_to(original)
+                copy = launch.shutil.copy2
+
+                def interrupted(source, destination, *args, **kwargs):
+                    if Path(source) == self.package / 'd3dcompiler_47.dll':
+                        Path(destination).write_bytes(b'partial copy')
+                        raise OSError('interrupted prefix copy')
+                    return copy(source, destination, *args, **kwargs)
+
+                with patch.object(launch.shutil, 'copy2', side_effect=interrupted):
+                    with self.assertRaisesRegex(OSError, 'interrupted prefix copy'):
+                        launch.prepare_prefix(self.bundle, prefix)
+                if original_kind != 'missing':
+                    self.assertEqual(dll.read_bytes(), original.read_bytes())
+                launch.prepare_prefix(self.bundle, prefix)
+                self.assertEqual(dll.read_bytes(), b'native compiler')
+                entries = json.loads((self.bundle / 'prefixes.json').read_text())
+                self.assertEqual(len(entries), 2)
+                launch.restore_prefixes(self.bundle)
+                if original_kind == 'missing':
+                    self.assertFalse(dll.exists())
+                else:
+                    self.assertEqual(dll.read_bytes(), b'original Wine compiler')
+                    self.assertEqual(dll.is_symlink(), original_kind == 'symlink')
+
+    def test_missing_owned_prefix_file_is_recreated_but_modified_file_is_preserved(self):
+        prefix = self.root / 'prefix'
+        launch.prepare_prefix(self.bundle, prefix)
+        dll = prefix / 'drive_c/windows/system32/amdhip64_7.dll'
+        dll.unlink()
+        launch.prepare_prefix(self.bundle, prefix)
+        self.assertEqual(dll.read_bytes(), b'test placeholder')
+        dll.write_bytes(b'unrelated replacement')
+        with self.assertRaisesRegex(ValueError, 'managed prefix file changed'):
+            launch.prepare_prefix(self.bundle, prefix)
+        self.assertEqual(dll.read_bytes(), b'unrelated replacement')
+
+    def test_interrupted_initial_hip_copy_can_be_retried(self):
+        prefix = self.root / 'prefix'
+        with patch.object(launch.shutil, 'copy2', side_effect=OSError('copy failed')):
+            with self.assertRaisesRegex(OSError, 'copy failed'):
+                launch.prepare_prefix(self.bundle, prefix)
+        launch.prepare_prefix(self.bundle, prefix)
+        dll = prefix / 'drive_c/windows/system32/amdhip64_7.dll'
+        self.assertEqual(dll.read_bytes(), b'test placeholder')
+        launch.restore_prefixes(self.bundle)
+        self.assertFalse(dll.exists())
+
+    def test_invalid_prefix_journal_rejected_before_file_changes(self):
+        prefix = self.root / 'prefix'
+        record = self.bundle / 'prefixes.json'
+        invalid = ({}, [{'path': '/tmp/outside', 'sha256': '0' * 64}],
+                   [{'path': str(prefix / 'drive_c/windows/system32/amdhip64_7.dll'), 'sha256': None}])
+        for entries in invalid:
+            with self.subTest(entries=entries):
+                record.write_text(json.dumps(entries))
+                with self.assertRaisesRegex(ValueError, 'Invalid prefix ownership'):
+                    launch.prepare_prefix(self.bundle, prefix)
+                with self.assertRaisesRegex(ValueError, 'Invalid prefix ownership'):
+                    launch.restore_prefixes(self.bundle)
+                self.assertFalse(prefix.exists())
+
+    def test_prefix_parent_symlink_does_not_redirect_install_or_restore(self):
+        prefix = self.root / 'prefix'
+        outside = self.root / 'unrelated system32'
+        outside.mkdir()
+        system32 = prefix / 'drive_c/windows/system32'
+        system32.parent.mkdir(parents=True)
+        system32.symlink_to(outside, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, 'parent became a symlink'):
+            launch.prepare_prefix(self.bundle, prefix)
+        self.assertEqual(list(outside.iterdir()), [])
+        system32.unlink()
+        launch.prepare_prefix(self.bundle, prefix)
+        system32.rename(prefix / 'saved-system32')
+        system32.symlink_to(outside, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, 'parent became a symlink'):
+            launch.restore_prefixes(self.bundle, force=True)
+        self.assertEqual(list(outside.iterdir()), [])
 
     def test_environment_preserves_other_overrides(self):
         rocm = self.bundle / "rocm/lib"

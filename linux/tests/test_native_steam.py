@@ -263,6 +263,23 @@ class SteamTests(unittest.TestCase):
         executable(empty / 'game.exe', x64=False)
         self.assertIsNone(steam.resolve_exe_directory(empty))
 
+    def test_directory_resolution_distinguishes_crash_games_from_helpers(self):
+        executable(self.install / 'CrashBandicoot4.exe')
+        executable(self.install / 'tools/CrashReportClient.exe')
+        executable(self.install / 'tools/crashpad_handler.exe')
+        executable(self.install / 'tools/UnityCrashHandler64.exe')
+        executable(self.install / 'amdnr-linux/source/linux/tests/fixture.exe')
+        executable(self.install / '.amdnr-linux-backup/old/game.exe')
+        self.assertEqual(steam.resolve_exe_directory(self.install), self.install)
+
+    def test_directory_resolution_does_not_follow_external_executable_links(self):
+        executable(self.install / 'game.exe')
+        external = self.root / 'external tools'
+        executable(external / 'game.exe')
+        (self.install / 'external').symlink_to(external, target_is_directory=True)
+        (self.install / 'linked.exe').symlink_to(external / 'game.exe')
+        self.assertEqual(steam.resolve_exe_directory(self.install), self.install)
+
     def test_configure_preserves_all_other_bytes_and_original_wrappers_arguments(self):
         original = 'MANGOHUD=1 gamemoderun %command% --launcher-skip --name "A B"'
         path = self.account(original, newline='\r\n')

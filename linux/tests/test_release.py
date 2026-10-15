@@ -137,6 +137,8 @@ class ReleaseTests(unittest.TestCase):
         for destination, original in release.BINARIES.items():
             self.assertEqual(files[prefix + "linux/build/" + destination], (self.package / original).read_bytes())
         manifest = json.loads(files[prefix + "RELEASE-MANIFEST.json"])
+        self.assertEqual(manifest["validation"]["status"], "not_attached")
+        self.assertNotIn("tested_game", manifest)
         self.assertEqual(manifest["binaries"], sums)
         self.assertEqual(manifest["source_commit"], self.git(self.repo, "rev-parse", "HEAD").decode().strip())
         self.assertIn(prefix + "linux/licenses/toolchain.txt", files)
@@ -171,6 +173,33 @@ class ReleaseTests(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(subprocess.CalledProcessError):
             self.package_release()
         self.assertFalse(self.output.exists())
+
+    def test_validation_is_bound_to_exact_binaries_and_excludes_local_paths(self):
+        report = self.root / "results.json"
+        data = {"status": "passed", "package": str(self.package),
+                "binaries": {name: release.sha(self.package / name) for name in release.BINARIES.values()},
+                "tests": [{"log": "neural_smoke.log", "status": "passed"}]}
+        report.write_text(json.dumps(data))
+        metadata = release.validation_metadata(report, self.package)
+        self.assertEqual(metadata["status"], "passed")
+        self.assertNotIn(str(self.root), json.dumps(metadata))
+        data['tests'].append({'log': 'd3d12_interop.log', 'status': 'passed_with_skips'})
+        report.write_text(json.dumps(data))
+        self.assertEqual(release.validation_metadata(report, self.package)['status'], 'passed_with_skips')
+        changed = next(iter(release.BINARIES.values()))
+        (self.package / changed).write_bytes(b"different build")
+        with self.assertRaisesRegex(ValueError, "binary mismatch"):
+            release.validation_metadata(report, self.package)
+
+    def test_failed_and_empty_validation_reports_are_rejected(self):
+        report = self.root / "results.json"
+        report.write_text(json.dumps({"status": "failed"}))
+        with self.assertRaisesRegex(ValueError, "did not pass"):
+            release.validation_metadata(report, self.package)
+        report.write_text(json.dumps({"status": "passed", "tests": [],
+                                     "binaries": {name: release.sha(self.package / name) for name in release.BINARIES.values()}}))
+        with self.assertRaisesRegex(ValueError, "missing or failed"):
+            release.validation_metadata(report, self.package)
 
 
 if __name__ == "__main__":

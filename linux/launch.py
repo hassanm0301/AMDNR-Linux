@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 import fcntl
@@ -33,37 +34,94 @@ def prepare_prefix(bundle, prefix):
     # placeholder creation and ownership recording across those processes.
     with (bundle / "prefixes.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        _prepare_prefix(bundle, prefix)
+        _prepare_prefix(bundle, Path(prefix).expanduser().resolve())
+
+def _prefix_entries(record):
+    if record.is_symlink():
+        raise ValueError(f"Prefix ownership record must not be a symlink: {record}")
+    if not record.exists():
+        return []
+    try:
+        entries = json.loads(record.read_text())
+        if not isinstance(entries, list):
+            raise ValueError()
+        seen = set()
+        for entry in entries:
+            path = Path(entry["path"])
+            if (not path.is_absolute() or ".." in path.parts or "\0" in entry["path"] or str(path) != entry["path"] or
+                    path.parts[-4:-1] != ("drive_c", "windows", "system32") or
+                    path.name not in ("amdhip64_7.dll", "d3dcompiler_47.dll") or str(path) in seen or
+                    not re.fullmatch(r"[0-9a-f]{64}", entry["sha256"])):
+                raise ValueError()
+            seen.add(str(path))
+            if "backup" in entry and (entry["backup"] != hashlib.sha256(str(path).encode()).hexdigest() + ".dll" or
+                                      not re.fullmatch(r"[0-9a-f]{64}", entry["backup_sha256"])):
+                raise ValueError()
+            if "original_link" in entry and (not isinstance(entry["original_link"], str) or
+                                              "\0" in entry["original_link"] or "backup" in entry):
+                raise ValueError()
+        return entries
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError(f"Invalid prefix ownership record: {record}. Preserve it for recovery.") from error
+
+def _prefix_backup(bundle, entry):
+    backup = bundle / "prefix-backups" / entry["backup"]
+    if (backup.parent.is_symlink() or backup.is_symlink() or not backup.is_file() or
+            sha(backup) != entry["backup_sha256"]):
+        raise ValueError(f"Missing or changed prefix backup: {backup}")
+    return backup
+
+def _check_prefix_parents(path):
+    if any(parent.is_symlink() for parent in path.parents):
+        raise ValueError(f"Prefix file parent became a symlink: {path}")
 
 def _prepare_prefix(bundle, prefix):
     record = bundle / "prefixes.json"
-    entries = json.loads(record.read_text()) if record.exists() else []
+    entries = _prefix_entries(record)
     sources = [bundle / "x86_64-windows/amdhip64_7.dll", bundle.parent / "d3dcompiler_47.dll"]
     for source in sources:
         if not source.is_file():
             raise ValueError(f"Missing prefix support file: {source}")
     for source in sources:
         destination = prefix / "drive_c/windows/system32" / source.name
+        _check_prefix_parents(destination)
         destination.parent.mkdir(parents=True, exist_ok=True)
         expected = sha(source)
-        if destination.is_file() and sha(destination) == expected:
-            continue
-        if any(entry["path"] == str(destination) for entry in entries):
-            raise ValueError(f"A managed prefix file changed: {destination}. Restore this install before retrying.")
-        if source.name == "amdhip64_7.dll" and (destination.exists() or destination.is_symlink()):
-            raise ValueError(f"A different HIP DLL is already installed: {destination}")
-        entry = {"path": str(destination), "sha256": expected}
-        # The host compiles its shaders through an absolute System32 path.
-        # Preserve the prefix's compiler before installing the supplied native one.
-        if destination.is_symlink():
-            entry["original_link"] = str(destination.readlink())
-        elif destination.exists():
-            backup = bundle / "prefix-backups" / (hashlib.sha256(str(destination).encode()).hexdigest() + ".dll")
-            backup.parent.mkdir(exist_ok=True)
-            shutil.copy2(destination, backup)
-            entry.update(backup=backup.name, backup_sha256=sha(backup))
-        entries.append(entry)
-        _write_record(record, entries)
+        entry = next((entry for entry in entries if entry["path"] == str(destination)), None)
+        if entry is not None:
+            if entry["sha256"] != expected:
+                raise ValueError(f"A managed prefix support file changed: {source}. Repair this install before retrying.")
+            if "backup" in entry:
+                _prefix_backup(bundle, entry)
+            if destination.is_file() and not destination.is_symlink() and sha(destination) == expected:
+                continue
+            # The journal is saved before replacement. Resume an interrupted
+            # copy only if the original remains intact, or the target is absent.
+            original = (destination.is_symlink() and "original_link" in entry and
+                        str(destination.readlink()) == entry["original_link"]) or (
+                        "backup" in entry and destination.is_file() and not destination.is_symlink() and
+                        sha(destination) == entry["backup_sha256"])
+            if (destination.exists() or destination.is_symlink()) and not original:
+                raise ValueError(f"A managed prefix file changed: {destination}. Restore this install before retrying.")
+        else:
+            if destination.is_file() and sha(destination) == expected:
+                continue
+            if source.name == "amdhip64_7.dll" and (destination.exists() or destination.is_symlink()):
+                raise ValueError(f"A different HIP DLL is already installed: {destination}")
+            entry = {"path": str(destination), "sha256": expected}
+            # The host compiles its shaders through an absolute System32 path.
+            # Preserve its compiler before installing the supplied native one.
+            if destination.is_symlink():
+                entry["original_link"] = str(destination.readlink())
+            elif destination.exists():
+                backup = bundle / "prefix-backups" / (hashlib.sha256(str(destination).encode()).hexdigest() + ".dll")
+                if backup.parent.is_symlink() or backup.is_symlink():
+                    raise ValueError(f"Prefix backup must not be a symlink: {backup}")
+                backup.parent.mkdir(exist_ok=True)
+                shutil.copy2(destination, backup)
+                entry.update(backup=backup.name, backup_sha256=sha(backup))
+            entries.append(entry)
+            _write_record(record, entries)
         # Atomic replacement never follows a destination symlink and leaves the
         # original intact if copying fails. The journal precedes the replacement.
         with tempfile.NamedTemporaryFile(dir=destination.parent, delete=False) as temp:
@@ -75,26 +133,32 @@ def _prepare_prefix(bundle, prefix):
             pending.unlink(missing_ok=True)
 
 def _write_record(record, entries):
-    temp = record.with_suffix(".tmp")
-    temp.write_text(json.dumps(entries, indent=2) + "\n")
-    temp.replace(record)
+    with tempfile.NamedTemporaryFile(mode="w", prefix=".prefixes-", dir=record.parent,
+                                     encoding="utf-8", delete=False) as output:
+        pending = Path(output.name)
+        try:
+            output.write(json.dumps(entries, indent=2) + "\n")
+            output.flush()
+            os.fsync(output.fileno())
+            pending.replace(record)
+            directory = os.open(record.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        finally:
+            pending.unlink(missing_ok=True)
 
 def restore_prefixes(bundle, force=False):
     record = bundle / "prefixes.json"
+    entries = _prefix_entries(record)
     if record.is_file():
-        entries = json.loads(record.read_text())
         for entry in entries:
             path = Path(entry["path"])
-            if not path.is_absolute() or path.parts[-4:-1] != ("drive_c", "windows", "system32") or path.name not in ("amdhip64_7.dll", "d3dcompiler_47.dll"):
-                raise ValueError(f"Invalid prefix file record: {path}")
+            _check_prefix_parents(path)
             backup = None
             if "backup" in entry:
-                expected_name = hashlib.sha256(str(path).encode()).hexdigest() + ".dll"
-                if entry["backup"] != expected_name:
-                    raise ValueError(f"Invalid prefix backup record: {path}")
-                backup = bundle / "prefix-backups" / expected_name
-                if not backup.is_file() or backup.is_symlink() or sha(backup) != entry["backup_sha256"]:
-                    raise ValueError(f"Missing or changed prefix backup: {backup}")
+                backup = _prefix_backup(bundle, entry)
             already_restored = (backup and path.is_file() and not path.is_symlink() and sha(path) == entry["backup_sha256"]) or (
                 "original_link" in entry and path.is_symlink() and str(path.readlink()) == entry["original_link"])
             if already_restored:

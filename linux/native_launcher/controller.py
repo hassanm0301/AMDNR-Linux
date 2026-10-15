@@ -19,6 +19,7 @@ import uuid
 from . import VERSION
 from .backend import LauncherBackend
 from . import steam
+from .versions import version_key
 
 REPOSITORY = "hassanm0301/AMD-NR---OptiScaler-rocm"
 RELEASES_URL = f"https://api.github.com/repos/{REPOSITORY}/releases?per_page=30"
@@ -46,25 +47,31 @@ def file_hash(path):
 
 
 def version_tuple(text):
-    match = re.fullmatch(r"(?:linux-v)?(\d+)\.(\d+)\.(\d+)", text)
-    return tuple(map(int, match.groups())) if match else None
+    return version_key(text.removeprefix("linux-v")) if isinstance(text, str) else None
 
 
 def available_release(current=VERSION):
+    current_version = version_tuple(current)
+    if current_version is None:
+        raise ValueError("Invalid current Linux release version")
     request = urllib.request.Request(RELEASES_URL, headers={"Accept": "application/vnd.github+json", "User-Agent": "NR-Linux-Manager"})
     with urllib.request.urlopen(request, timeout=30) as response:
         releases = json.load(response)
     candidates = []
     for release in releases:
         version = version_tuple(release.get("tag_name", ""))
-        if release.get("draft") or version is None or version <= version_tuple(current):
+        # Local preview builds can update to a stable release, but prereleases
+        # remain opt-in and are never offered by the normal update channel.
+        if (release.get("draft") or release.get("prerelease") or version is None or
+                not version[3] or version <= current_version):
             continue
-        name = f"AMDNR-Linux-v{'.'.join(map(str, version))}.tar.gz"
+        number = release["tag_name"].removeprefix("linux-v")
+        name = f"AMDNR-Linux-v{number}.tar.gz"
         for asset in release.get("assets", []):
             expected_url = f"https://github.com/{REPOSITORY}/releases/download/{release['tag_name']}/{name}"
             if (asset.get("name") == name and asset.get("browser_download_url") == expected_url
                     and re.fullmatch(r"sha256:[a-f0-9]{64}", asset.get("digest") or "")):
-                candidates.append({"version": '.'.join(map(str, version)), "url": expected_url,
+                candidates.append({"version": number, "url": expected_url,
                                    "sha256": asset["digest"][7:], "size": asset.get("size", 0),
                                    "page": f"https://github.com/{REPOSITORY}/releases/tag/{release['tag_name']}"})
     return max(candidates, key=lambda item: version_tuple(item["version"]), default=None)

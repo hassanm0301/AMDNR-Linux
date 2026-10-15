@@ -1,30 +1,81 @@
 #!/usr/bin/env python3
 """Run the real GPU tests in an isolated Proton prefix. Requires an RX 9070-series GPU."""
 import argparse
+from datetime import datetime, timezone
+import fcntl
+import hashlib
+import json
 import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import subprocess
+import tempfile
+import time
 from launch import environment, prepare_prefix, restore_prefixes
 
 ROOT = Path(__file__).resolve().parent
+OPTIMIZATION_ENVIRONMENT = ("AMDNR_L37", "AMDNR_L39", "AMDNR_L41", "AMDNR_C32W",
+                            "AMDNR_FASTK", "AMDNR_FAST_HISTORY", "AMDNR_LOOSE_ASSETS",
+                            "AMDNR_HIP_TRACE", "AMDNR_SIGNAL_TRACE")
 
 def windows(path):
     return "Z:" + str(path.resolve()).replace("/", "\\")
 
+def write_report(path, report):
+    with tempfile.NamedTemporaryFile(mode="w", prefix=".results-", dir=path.parent,
+                                     encoding="utf-8", delete=False) as output:
+        pending = Path(output.name)
+        try:
+            json.dump(report, output, indent=2)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+            pending.replace(path)
+        finally:
+            pending.unlink(missing_ok=True)
+
 def run(command, env, directory, log, timeout=180, expect_pass=False, allow_skip=False):
+    started = time.monotonic()
     with log.open("w") as output:
-        result = subprocess.run([str(x) for x in command], env=env, cwd=directory,
-                                stdout=output, stderr=subprocess.STDOUT, timeout=timeout)
+        # Wine helpers can outlive their parent. Give each invocation its own
+        # process group so a timeout cannot leave a GPU workload behind.
+        process = subprocess.Popen([str(x) for x in command], env=env, cwd=directory,
+                                   stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
+        try:
+            process.wait(timeout=timeout)
+        except BaseException:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+                process.wait(timeout=5)
+            except (ProcessLookupError, subprocess.TimeoutExpired):
+                pass
+            finally:
+                # The group leader may exit before a stubborn child does.
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait()
+            raise
     text = log.read_text(errors="replace")
-    if allow_skip and result.returncode == 77 and "SKIP:" in text:
-        print(next(line for line in reversed(text.splitlines()) if "SKIP:" in line), flush=True)
-        return
-    if result.returncode or (expect_pass and "PASS:" not in text):
-        raise RuntimeError(f"Test failed (exit {result.returncode}): {log}\n" + "\n".join(text.splitlines()[-25:]))
+    result = {"log": log.name, "exit_code": process.returncode,
+              "elapsed_seconds": round(time.monotonic() - started, 6)}
+    passes = [line for line in text.splitlines() if line.startswith("PASS:")]
+    skips = [line for line in text.splitlines() if line.startswith("SKIP:")]
+    if allow_skip and process.returncode == 77 and skips:
+        print(skips[-1], flush=True)
+        return dict(result, status="skipped", skips=skips)
+    if process.returncode or (expect_pass and not passes):
+        raise RuntimeError(f"Test failed (exit {process.returncode}): {log}\n" + "\n".join(text.splitlines()[-25:]))
+    for skip in skips:
+        print(skip, flush=True)
     if expect_pass:
-        print(next(line for line in reversed(text.splitlines()) if "PASS:" in line), flush=True)
+        print(passes[-1], flush=True)
+    benchmarks = [json.loads(line.removeprefix("BENCHMARK: "))
+                  for line in text.splitlines() if line.startswith("BENCHMARK: ")]
+    return dict(result, status="passed_with_skips" if skips else "passed", benchmarks=benchmarks, skips=skips)
 
 def host_config(source, destination, settings):
     """Change only explicit settings in an isolated copy of the release INI."""
@@ -55,6 +106,10 @@ def main():
     parser.add_argument("--full-network", action="store_true")
     parser.add_argument("--history", action="store_true")
     parser.add_argument("--controls", action="store_true")
+    parser.add_argument("--benchmark", action="store_true",
+                        help="Measure serialized neural pipeline + readback, excluding 10 warmup frames; not game FPS")
+    parser.add_argument("--neural-only", action="store_true",
+                        help="Run only neural tests, for repeated measurements after a full validation pass")
     parser.add_argument("--with-host", action="store_true",
                         help="Also run inference with the released OptiScaler graphics hooks and GPU spoofing")
     parser.add_argument("--host-pipeline", action="store_true",
@@ -62,55 +117,104 @@ def main():
     args = parser.parse_args()
     if not 3 <= args.frames <= 10000:
         parser.error("--frames must be between 3 and 10000")
+    if args.benchmark and args.frames < 30:
+        parser.error("--benchmark requires at least 30 frames")
     if not 64 <= args.width <= 1920 or not 64 <= args.height <= 1080:
         parser.error("Image size must be between 64x64 and 1920x1080")
     package, build, work, proton = (p.resolve() for p in (args.package, args.build, args.output, args.proton))
     work.mkdir(parents=True, exist_ok=True)
-    bundle = work / "amdnr-linux"
-    if bundle.exists():
-        restore_prefixes(bundle)
-        # Old test bundles used an ELF builtin. Do not retain a fallback that
-        # would disable Wine syscall dispatch when testing the PE/Unixlib bridge.
-        (bundle / "x86_64-unix/amdhip64_7.dll.so").unlink(missing_ok=True)
-    shutil.copytree(package / "amdnr-linux", bundle, dirs_exist_ok=True,
-                    ignore=shutil.ignore_patterns("prefixes.*", "prefix-backups"))
-    for name in ("d3d12.dll", "d3d12core.dll", "d3dcompiler_47.dll"):
-        shutil.copy2(package / name, work / name)
-    if args.with_host or args.host_pipeline:
-        for name in ("winmm.dll", "LmxxfNrRuntime.dll", "LmxxfNrRuntime.pak"):
-            shutil.copy2(package / name, work / name)
-        shutil.copytree(package / "OptiScaler", work / "OptiScaler", dirs_exist_ok=True)
-        # Configure only the isolated test copy; force the paths that games use
-        # even though the harness has no NGX library for host autodetection.
-        settings = {("Log", "LogToFile"): "true", ("Log", "LogLevel"): "1",
-                    ("Menu", "OverlayMenu"): "true", ("Spoofing", "Dxgi"): "true",
-                    ("Spoofing", "Vulkan"): "true", ("Hotfix", "CheckForUpdate"): "false"}
-        host_config(package / "OptiScaler.ini", work / "OptiScaler.ini", settings)
-    for name in ("syscall_dispatch.exe", "hip_smoke.exe", "exception_smoke.exe", "exception_context.exe", "compute.hsaco", "d3d12_interop.exe", "neural_smoke.exe", "host_shaders.exe"):
-        shutil.copy2(build / name, work / name)
-    if args.host_pipeline:
-        shutil.copy2(build / "host_neural.exe", work / "host_neural.exe")
+    # A second run in the same directory must not replace evidence or restore
+    # prefix files while the first run still owns that isolated environment.
+    with (work / ".gpu-test.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise RuntimeError("Another GPU test is using this output directory") from error
+        run_suite(args, package, build, work, proton)
+
+
+def run_suite(args, package, build, work, proton):
+    report = {"created_utc": datetime.now(timezone.utc).isoformat(), "status": "running",
+              "proton": str(proton), "package": str(package),
+              "proton_version": "unknown",
+              "settings": {key: value for key, value in vars(args).items() if not isinstance(value, Path)},
+              "optimization_environment": {name: os.environ.get(name) for name in OPTIMIZATION_ENVIRONMENT},
+              "binaries": {}, "tests": []}
+    # Invalidate old passing evidence before any copy, hash, or prefix work.
+    write_report(work / "results.json", report)
     compat = work / "compat"
-    compat.mkdir(exist_ok=True)
     prefix = compat / "pfx"
     env = os.environ.copy()
+    env.pop("AMDNR_TEST_HOST", None)  # Host loading is enabled only by the explicit subtest.
     env.update(STEAM_COMPAT_DATA_PATH=str(compat), SteamAppId="0", SteamGameId="0",
                STEAM_COMPAT_CLIENT_INSTALL_PATH=env.get("STEAM_COMPAT_CLIENT_INSTALL_PATH", str(Path.home() / ".local/share/Steam")),
                WINEDEBUG="-all", VKD3D_DEBUG="none", DXVK_LOG_LEVEL="error", VKD3D_SHADER_CACHE_PATH=str(work))
-    run([proton / "proton", "run", "cmd.exe", "/c", "exit"], env, work, work / "prefix.log")
+    # Set the isolated prefix before initialization so even failed startup is
+    # cleaned up without touching an unrelated game/server from the parent env.
     env.update(WINEPREFIX=str(prefix), WINESERVER=str(proton / "files/bin/wineserver"))
-    lib = proton / ("files/lib64" if (proton / "files/lib64").is_dir() else "files/lib")
-    env["LD_LIBRARY_PATH"] = str(lib) + (":" + env["LD_LIBRARY_PATH"] if env.get("LD_LIBRARY_PATH") else "")
-    env = environment(bundle, env)
-    env["AMDNR_TEST_FULL_NETWORK"] = "1" if args.full_network else "0"
-    env["AMDNR_TEST_HISTORY"] = "1" if args.history else "0"
-    env["AMDNR_TEST_CONTROLS"] = "1" if args.controls else "0"
-    prepare_prefix(bundle, prefix)
+    def execute(command, run_env, directory, log, **options):
+        try:
+            result = run(command, run_env, directory, log, **options)
+            if args.benchmark and log.name in ("neural_smoke.log", "neural_host.log") and not result.get("benchmarks"):
+                raise RuntimeError("Benchmark marker missing; rebuild neural_smoke.exe with linux/build-tests.sh")
+        except BaseException as error:
+            report["tests"].append({"log": log.name, "status": "failed", "error": str(error)})
+            raise
+        report["tests"].append(result)
+        return result
     wine = proton / "files/bin/wine"
+    prefix_started = False
+    original_error = None
     try:
-        run([wine, work / "syscall_dispatch.exe"], env, work, work / "syscall_dispatch.log",
-            expect_pass=True, allow_skip=True)
-        for name, arguments in (
+        if not (args.with_host or args.host_pipeline) and any(
+                (work / name).exists() or (work / name).is_symlink()
+                for name in ("winmm.dll", "LmxxfNrRuntime.dll", "LmxxfNrRuntime.pak", "OptiScaler.ini", "OptiScaler")):
+            raise ValueError("This output directory contains host-test fixtures. Use a fresh --output for tests without the host.")
+        bundle = work / "amdnr-linux"
+        if bundle.exists():
+            restore_prefixes(bundle)
+            # Old test bundles used an ELF builtin. Do not retain a fallback that
+            # would disable Wine syscall dispatch when testing the PE/Unixlib bridge.
+            (bundle / "x86_64-unix/amdhip64_7.dll.so").unlink(missing_ok=True)
+        shutil.copytree(package / "amdnr-linux", bundle, dirs_exist_ok=True,
+                        ignore=shutil.ignore_patterns("prefixes.*", "prefix-backups"))
+        for name in ("d3d12.dll", "d3d12core.dll", "d3dcompiler_47.dll"):
+            shutil.copy2(package / name, work / name)
+        if args.with_host or args.host_pipeline:
+            for name in ("winmm.dll", "LmxxfNrRuntime.dll", "LmxxfNrRuntime.pak"):
+                shutil.copy2(package / name, work / name)
+            shutil.copytree(package / "OptiScaler", work / "OptiScaler", dirs_exist_ok=True)
+            # Configure only the isolated test copy; force the paths that games use
+            # even though the harness has no NGX library for host autodetection.
+            settings = {("Log", "LogToFile"): "true", ("Log", "LogLevel"): "1",
+                        ("Menu", "OverlayMenu"): "true", ("Spoofing", "Dxgi"): "true",
+                        ("Spoofing", "Vulkan"): "true", ("Hotfix", "CheckForUpdate"): "false"}
+            host_config(package / "OptiScaler.ini", work / "OptiScaler.ini", settings)
+        for name in ("syscall_dispatch.exe", "hip_smoke.exe", "exception_smoke.exe", "exception_context.exe", "compute.hsaco", "d3d12_interop.exe", "neural_smoke.exe", "host_shaders.exe"):
+            shutil.copy2(build / name, work / name)
+        if args.host_pipeline:
+            shutil.copy2(build / "host_neural.exe", work / "host_neural.exe")
+        compat.mkdir(exist_ok=True)
+        report["proton_version"] = (proton / "version").read_text().strip() if (proton / "version").is_file() else "unknown"
+        for name in ("LmxxfNrRuntime.dll", "LmxxfNrRuntime.pak", "d3d12.dll", "d3d12core.dll",
+                     "amdnr-linux/x86_64-windows/amdhip64_7.dll", "amdnr-linux/x86_64-unix/amdhip64_7.so",
+                     "amdnr-linux/x86_64-unix/libamdnr_signal_guard.so"):
+            with (package / name).open("rb") as binary:
+                report["binaries"][name] = hashlib.file_digest(binary, "sha256").hexdigest()
+        prefix_started = True
+        execute([proton / "proton", "run", "cmd.exe", "/c", "exit"], env, work, work / "prefix.log")
+        lib = proton / ("files/lib64" if (proton / "files/lib64").is_dir() else "files/lib")
+        env["LD_LIBRARY_PATH"] = str(lib) + (":" + env["LD_LIBRARY_PATH"] if env.get("LD_LIBRARY_PATH") else "")
+        env = environment(bundle, env)
+        env["AMDNR_TEST_FULL_NETWORK"] = "1" if args.full_network else "0"
+        env["AMDNR_TEST_HISTORY"] = "1" if args.history else "0"
+        env["AMDNR_TEST_CONTROLS"] = "1" if args.controls else "0"
+        env["AMDNR_TEST_BENCHMARK"] = "1" if args.benchmark else "0"
+        prepare_prefix(bundle, prefix)
+        if not args.neural_only:
+            execute([wine, work / "syscall_dispatch.exe"], env, work, work / "syscall_dispatch.log",
+                    expect_pass=True, allow_skip=True)
+        cases = (
             ("exception_smoke", []),
             ("exception_context", [windows(work / "compute.hsaco")]),
             ("hip_smoke", [windows(work / "compute.hsaco")]),
@@ -118,12 +222,15 @@ def main():
             ("host_shaders", []),
             ("neural_smoke", [windows(package / "LmxxfNrRuntime.dll"), windows(package / "LmxxfNrRuntime.pak"),
                               str(args.frames), str(args.width), str(args.height)]),
-        ):
-            run([wine, work / (name + ".exe"), *arguments], env, work, work / (name + ".log"), expect_pass=True)
+        )
+        for name, arguments in cases:
+            if args.neural_only and name != "neural_smoke":
+                continue
+            execute([wine, work / (name + ".exe"), *arguments], env, work, work / (name + ".log"), expect_pass=True)
         if args.with_host:
             host_env = dict(env, AMDNR_TEST_HOST=windows(work / "winmm.dll"))
             (work / "OptiScaler.log").unlink(missing_ok=True)
-            run([wine, work / "neural_smoke.exe", windows(work / "LmxxfNrRuntime.dll"),
+            execute([wine, work / "neural_smoke.exe", windows(work / "LmxxfNrRuntime.dll"),
                  windows(work / "LmxxfNrRuntime.pak"), str(args.frames), str(args.width), str(args.height)],
                 host_env, work, work / "neural_host.log", expect_pass=True)
             host_log = (work / "OptiScaler.log").read_text(errors="replace")
@@ -143,14 +250,39 @@ def main():
                 for name in ("OptiScaler.log", "lmxxf_backend.log", "amd_bridge.log"):
                     (work / name).unlink(missing_ok=True)
                 reference = windows(work / "host-baseline.bin") if mode == "neural" else "-"
-                run([wine, work / "host_neural.exe", windows(work / "winmm.dll"), mode,
+                execute([wine, work / "host_neural.exe", windows(work / "winmm.dll"), mode,
                      windows(work / f"host-{mode}.bin"), reference], env, work,
                     work / f"host-pipeline-{mode}.log", expect_pass=True)
                 for name in ("OptiScaler.log", "lmxxf_backend.log", "amd_bridge.log"):
                     if (work / name).exists():
                         shutil.copy2(work / name, work / f"{Path(name).stem}-host-{mode}.log")
+        report["status"] = "passed_with_skips" if any(test["status"] in ("skipped", "passed_with_skips") for test in report["tests"]) else "passed"
+    except BaseException as error:
+        original_error = error
+        report.update(status="failed", error=str(error))
+        raise
     finally:
-        subprocess.run([str(proton / "files/bin/wineserver"), "-k"], env=env, check=False)
+        cleanup_error = None
+        if prefix_started:
+            # -k requests termination; -w confirms the isolated server actually
+            # exits. Both commands are bounded and retained as validation checks.
+            for flag, name in (("-k", "wineserver-k.log"), ("-w", "wineserver-w.log")):
+                try:
+                    execute([proton / "files/bin/wineserver", flag], env, work, work / name, timeout=15)
+                except BaseException as error:
+                    if cleanup_error is None:
+                        cleanup_error = error
+            if cleanup_error is not None:
+                report.update(status="failed", cleanup_error=str(cleanup_error))
+                if original_error is None:
+                    report["error"] = str(cleanup_error)
+        try:
+            write_report(work / "results.json", report)
+        except BaseException:
+            if original_error is None and cleanup_error is None:
+                raise
+        if cleanup_error is not None and original_error is None:
+            raise cleanup_error
     print(f"GPU test logs: {work}")
 
 if __name__ == "__main__":
