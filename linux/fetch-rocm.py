@@ -8,7 +8,6 @@ import argparse
 import hashlib
 from pathlib import Path
 import shutil
-import subprocess
 import tarfile
 import tempfile
 import urllib.request
@@ -44,6 +43,60 @@ def digest(path):
     with path.open("rb") as source:
         return hashlib.file_digest(source, "sha256").hexdigest()
 
+
+def extract_data(package, destination):
+    """Read the standard Debian ar container without requiring binutils."""
+    found = False
+    with package.open("rb") as source:
+        if source.read(8) != b"!<arch>\n":
+            raise ValueError("Invalid Debian archive header")
+        while header := source.read(60):
+            if len(header) != 60 or header[58:] != b"`\n":
+                raise ValueError("Invalid Debian archive member")
+            name = header[:16].decode("ascii").strip().rstrip("/")
+            size = int(header[48:58].strip())
+            if size < 0 or source.tell() + size > package.stat().st_size:
+                raise ValueError("Truncated Debian archive member")
+            if name.startswith("data.tar"):
+                if found or name not in {"data.tar", "data.tar.xz", "data.tar.gz", "data.tar.bz2", "data.tar.zst"}:
+                    raise ValueError("Unsupported or duplicate Debian data member")
+                found = True
+                with destination.open("wb") as output:
+                    remaining = size
+                    while remaining:
+                        chunk = source.read(min(remaining, 1024 * 1024))
+                        if not chunk:
+                            raise ValueError("Debian archive changed while reading")
+                        output.write(chunk)
+                        remaining -= len(chunk)
+            else:
+                source.seek(size, 1)
+            if size % 2:
+                if source.read(1) != b"\n":
+                    raise ValueError("Invalid Debian member padding")
+    if not found:
+        raise ValueError("Debian package has no data archive")
+
+
+def extract_tar(archive, root):
+    with archive.open("rb") as source:
+        zstandard = source.read(4) == b"\x28\xb5\x2f\xfd"
+    if zstandard:
+        try:
+            from compression import zstd
+            stream = zstd.ZstdFile(archive, "rb")
+        except ImportError:
+            try:
+                import zstandard
+            except ImportError as error:
+                raise ValueError("Zstandard support is missing. Use the complete native launcher, Python 3.14+, or install the Python 'zstandard' package.") from error
+            stream = zstandard.open(archive, "rb")
+        with stream, tarfile.open(fileobj=stream, mode="r|") as tar:
+            tar.extractall(root, filter="data")
+    else:
+        with tarfile.open(archive) as tar:
+            tar.extractall(root, filter="data")
+
 def fetch(output, cache):
     if output.exists():
         raise ValueError(f"Output already exists: {output}")
@@ -63,13 +116,9 @@ def fetch(output, cache):
                     partial.unlink()
                     raise ValueError(f"Checksum mismatch: {url}")
                 partial.replace(package)
-            entries = subprocess.check_output(["ar", "t", str(package)], text=True).splitlines()
-            data = next(name for name in entries if name.startswith("data.tar"))
-            archive = Path(temp) / data
-            with archive.open("wb") as target:
-                subprocess.run(["ar", "p", str(package), data], stdout=target, check=True)
-            with tarfile.open(archive) as tar:
-                tar.extractall(root, filter="data")
+            archive = Path(temp) / "data.tar"
+            extract_data(package, archive)
+            extract_tar(archive, root)
             archive.unlink()
         stage = Path(temp) / "runtime"
         for directory, items in (("lib", LIBRARIES), ("licenses", LICENSES)):

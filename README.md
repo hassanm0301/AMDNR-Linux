@@ -350,7 +350,10 @@ the host refuses it). The capture host is AMDNR's own build, downloaded from AMD
 ## Linux / Proton (Steam Deck, desktop Linux)
 
 This fork adds an experimental Linux ROCm bridge for lmxxf Neural Rendering.
-**Prebuilt Linux release: [download and installation guide](linux/INSTALL.md).**
+**Native Linux launcher: [download and installation guide](linux/INSTALL.md).**
+NR Linux Manager detects Steam games and handles Install, Repair, Update and Uninstall,
+including verified downloads, backups and Steam launch options. Extract the portable app
+and open `Start.sh`; Python and Qt are included.
 Build and test details: [linux/README.md](linux/README.md).
 Neural rendering is verified in a short The Witcher 3 DX12 gameplay session on RX 9070 XT
 with Proton-Wineland 11.0; automated tests also pass on GE-Proton11-9. Compatibility remains

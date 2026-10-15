@@ -129,8 +129,6 @@ def prepare(compiler, archive=None, output=None, cache=None):
         raise ValueError("Download cache must be outside the output package directory.")
     validate_compiler(compiler)
     verify_binaries()
-    if shutil.which("ar") is None:
-        raise ValueError("The 'ar' program from binutils is required to extract the private ROCm packages.")
     if archive is not None:
         archive = Path(archive).expanduser().resolve()
         if not archive.is_file() or digest(archive) != RELEASE_SHA256:

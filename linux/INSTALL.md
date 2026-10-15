@@ -1,187 +1,137 @@
-# AMDNR Linux v0.1.0 — installation guide
+# NR Linux Manager — native Linux installation
 
-This experimental release runs AMDNR's **lmxxf neural rendering** through native
-Linux ROCm while the game runs under Proton. It includes the tested Linux bridge
-and patched vkd3d-proton binaries. **No compiling or system ROCm installation is
-needed.** AMDNR is by [3zwr1](https://github.com/3zwr1/AMD-NR---OptiScaler); this is
-an independently modified Linux fork.
+**Download [NR-Linux-Manager-v0.2.0-linux-x86_64.tar.gz](https://github.com/hassanm0301/AMD-NR---OptiScaler-rocm/releases/tag/linux-v0.2.0), extract it, and open `Start.sh`.**
+Python and the native Qt interface are included. No Proton setup is needed for
+the launcher itself, and no compiling or system ROCm installation is needed.
+If your file manager opens the script as text, choose “Run as program”, or open a
+terminal in the extracted folder and run `./Start.sh`.
 
-## Before you start
+This independent community launcher installs the tested AMDNR Linux bridge.
+AMDNR is by [3zwr1](https://github.com/3zwr1/AMD-NR---OptiScaler). It provides a
+familiar game library and installation workflow with an original interface;
+it does not include or port the restricted upstream Windows launcher.
 
-- **Tested GPU:** Radeon RX 9070 XT (RDNA 4). Other GPUs, including Steam Deck,
-  are not validated by this release. The upstream model must support your GPU.
-- **Tested game:** Stellar Blade with **GE-Proton11-9**, using its original Steam
-  prefix and an existing save. The Witcher 3 DX12 passed with an earlier bridge
-  and Proton-Wineland 11.0 (2026-09-30); it has not been retested with this package.
-  These were short gameplay checks, not long-duration stability tests.
-- A **64-bit x86 Linux** installation, working AMD Vulkan driver, and usable
-  `/dev/kfd` and `/dev/dri/renderD*` devices. Use the distribution's normal GPU
-  permission setup; do not launch the game or installer as root.
-- Wine 11-based Proton. Use GE-Proton11-9 for the tested configuration. This
-  bridge depends on Wine 11's Vulkan layout; older Proton is not supported.
-- The process runtime needs **glibc 2.34+** and **GCC 12-era libstdc++**
-  (`GLIBCXX_3.4.30`, `CXXABI_1.3.13`), plus Vulkan/DRM, zlib and zstd libraries.
-  The tested Steam Runtime 4 supplies these. Other distributions and runtimes
-  have not been validated; meeting these version floors alone is not a guarantee.
-- **Python 3.12+**, `ar` (from binutils), `tar`, an internet connection and about
-  **3 GB of free disk space** for downloads, extraction, and a prepared package.
-  More space is needed for each game installation and any backed-up mod files.
-- A **native 64-bit Microsoft `d3dcompiler_47.dll`** from a game you own. The
-  tested version is **10.0.14393.795**. Wine's builtin replacement cannot compile
-  all the neural renderer's shaders. This file is not distributed in this release.
+## Install a Steam game
 
-First verify the game launches and loads your save with your chosen Proton and
-without this add-on. Close it before installing. Remove conflicting OptiScaler,
-ReShade, or other DLL-injection mods using their own uninstall instructions;
-keep backups of your configurations. Test one change at a time.
+1. First check that the game launches and loads your save normally with Proton.
+2. Open **NR Linux Manager**. It detects installed Steam games across library
+   drives. Select a game. If asked, choose its actual **64-bit DirectX 12 game
+   executable**, rather than a store launcher.
+3. Close the game and **exit Steam completely**. Steam must be closed while its
+   launch options are updated, otherwise it can overwrite the change.
+4. Click **Install neural rendering**. The app finds a native shader compiler,
+   downloads the pinned AMDNR and ROCm files, backs up affected files, and sets
+   the Steam launch options. Existing MangoHud, GameMode and game arguments are
+   preserved when they use a supported launch-option format.
+5. Click **Launch in Steam** and load your save. Your existing Proton choice,
+   prefix and saves are retained.
 
-## 1. Download and extract
+The first install needs an internet connection and several gigabytes of free
+space. Later operations reuse verified downloads. If no native shader compiler
+is found in your games, the app asks you to select `d3dcompiler_47.dll` from a
+game you own. Wine's built-in DLL is unsuitable; do not use random DLL websites.
+The known-good compiler is Microsoft's x64 version **10.0.14393.795**.
 
-From this fork's [Linux v0.1.0 release](https://github.com/hassanm0301/AMD-NR---OptiScaler-rocm/releases/tag/linux-v0.1.0),
-download **`AMDNR-Linux-v0.1.0.tar.gz`** and **`SHA256SUMS`** into the same folder.
-The separate vkd3d source archive is for rebuilding; normal installation does
-not require it. GitHub's automatically generated “Source code” archives do not
-contain the prebuilt binaries.
+If a Steam game has never been launched, start it once in Steam so its account
+settings exist. Complex custom shell launch options may require manual adjustment;
+the app refuses ambiguous edits and explains why. Do not run the app as root.
 
-In a terminal in that folder:
+For non-Steam games, use **Add a game** and select the main executable. The same
+file installation works, but the app displays a launch option for you to add to
+your existing Proton/Wine runner. Automatic runner integration currently covers
+Steam only.
 
-```sh
-sha256sum --ignore-missing -c SHA256SUMS
-tar -xzf AMDNR-Linux-v0.1.0.tar.gz
-cd AMDNR-Linux-v0.1.0
-```
+## Repair, update and uninstall
 
-The archive check must say `OK`. Keep this extracted folder for installation,
-removal, and troubleshooting.
+Close the game and Steam before using these actions:
 
-## 2. Prepare the game package
+- **Repair** restores missing or changed managed files. It preserves your current
+  `OptiScaler.ini` and the original backups. Use a launcher matching an installed
+  newer package if an older app refuses the repair.
+- **Update** checks this fork's releases, verifies the downloaded Linux addon,
+  and applies it to the selected game. Original backups and your configuration
+  survive updates. Updating the native app itself means downloading and extracting
+  its newer portable archive; it does not replace itself while running.
+- **Uninstall and restore originals** removes the managed addon and restores
+  original game files, owned prefix files and Steam launch options. Your current
+  addon configuration is also saved in the manager's data folder. Saves are kept.
 
-Replace the example path with your own compiler file. Quote paths with spaces:
+A failed or interrupted operation retains recovery information. With the game
+and Steam closed, repeat the action to recover it before continuing. If a file,
+backup or Steam launch option was edited separately, the app may stop and explain
+the conflict instead of erasing that edit. Keep the game's `.amdnr-linux-backup`,
+`.amdnr-linux-install.json`, and `amdnr-linux` folders until removal completes.
 
-```sh
-python3 linux/setup.py prepare --compiler "/path/to/your/game/d3dcompiler_47.dll"
-```
+The manager stores settings, Steam backups, recovery journals, saved
+configurations and a small shared Python runtime in
+`~/.local/share/nr-linux-manager` (or `$XDG_DATA_HOME/nr-linux-manager`). Downloads
+are cached under `~/.cache/nr-linux-manager` (or `$XDG_CACHE_HOME/nr-linux-manager`).
+The portable app folder may be moved after installation. **Keep the manager's
+data folder while any patched game remains installed**: its shared Python runtime
+is used to start those games. To remove the app entirely, uninstall each patched
+game first, then remove its portable folder, data folder and cache.
 
-This verifies the included binaries, downloads the checksum-pinned **AMDNR
-0.3.5.5R4** archive from its upstream GitHub release, and downloads **ROCm 7.2.4**
-and its small dependencies directly from AMD and Ubuntu. It extracts a private
-runtime into the package; it does not install system packages, change drivers,
-or run package installation scripts. Upstream notices and licenses are retained.
-Read those notices for the downloaded components' terms.
+## Compatibility and verification
 
-When it finishes, the ready-to-install files are in **`linux/build/package`**.
-Preparation does not change a game or a Proton prefix. Downloads are cached;
-rerunning after a failed download reuses files whose checksums match.
+The bridge still has limited game/hardware coverage; a native launcher does not
+change the neural renderer's hardware requirements.
 
-If you already downloaded the exact upstream archive, you can use it:
+- **Tested GPU:** Radeon RX 9070 XT (RDNA 4).
+- **Tested rendering:** Stellar Blade with GE-Proton11-9, an existing save and
+  normal gameplay image. The Witcher 3 DX12 worked with an earlier bridge and
+  Proton-Wineland 11.0; it has not been retested with this exact package. These
+  were short gameplay checks, not long-duration stability tests.
+- **Required game runtime:** Wine 11-based Proton. GE-Proton11-9 is the tested
+  choice. The bridge rejects unsupported Wine Vulkan layouts.
+- **Required system:** x86_64 Linux, glibc 2.34+, a working AMD Vulkan driver,
+  and access to `/dev/kfd` and `/dev/dri/renderD*`. The game's process also needs
+  GCC 12-era libstdc++ (`GLIBCXX_3.4.30`, `CXXABI_1.3.13`) and Vulkan/DRM, zlib,
+  zstd libraries. The tested Steam Runtime 4 supplies these.
+- **Native interface:** X11 or Wayland and normal desktop libraries. On some
+  Debian/Ubuntu X11 installations, Qt also requires `libxcb-cursor0`.
+- **Not validated:** other GPUs, Steam Deck, Flatpak Steam, other game runners,
+  frame generation, Ray Regeneration, AMDNR Anywhere and the danielblnc backend.
+  Flatpak can detect a library while still denying access to the host runtime;
+  this app does not alter Flatpak permissions.
 
-```sh
-python3 linux/setup.py prepare \
-  --compiler "/path/to/d3dcompiler_47.dll" \
-  --archive "/path/to/AMDNR-v0.3.5.5R4.zip"
-```
+Enable a supported upscaler in the game's graphics settings. **Insert** opens
+OptiScaler; **Home** toggles the neural effect. The prepared package selects the
+**lmxxf** backend. A banner alone does not prove neural inference is running.
+Look in `lmxxf_backend.log` beside the executable for `hip=1`, successful network
+initialization, and increasing **model** and **fresh composition** counts. The
+successful Stellar Blade run recorded 3,599 model frames and 3,594 fresh outputs,
+with temporal history and all 71 network blocks active. Rendering has a substantial
+GPU cost; the measured neural kernel took about 11–13 ms per frame.
 
-An existing output folder is never overwritten. Reuse the prepared package for
-another game, or specify a different `--output` directory when preparing again.
+The native launcher has fixture tests for discovery, all four file operations,
+Steam rollback, interrupted-operation recovery and GUI buttons. Packaging tests
+check the portable runtime and retained rendering binary hashes. This release
+reuses the previously game-tested rendering binaries; its new work is installation
+and management, not a new neural model.
 
-## 3. Install beside the actual game executable
+## Troubleshooting and downloads
 
-In Steam, use **Properties → Installed Files → Browse** to find the game.
-Install into the directory containing the **actual 64-bit DX12 game executable**,
-which may be below the directory Steam opens. For example:
-
-| Game | Directory inside the game's installation |
+| Problem | Action |
 | --- | --- |
-| Stellar Blade | `SB/Binaries/Win64` |
-| The Witcher 3 (DX12) | `bin/x64_dx12` |
+| Install asks to close Steam | Use Steam → Exit, then retry. Closing its window may leave it running. |
+| Game is missing | Rescan; confirm its Steam library is mounted. Or choose Add a game. |
+| Wrong or ambiguous executable folder | Use Choose game executable. Stellar Blade uses `SB/Binaries/Win64`; Witcher 3 DX12 uses `bin/x64_dx12`. |
+| Installation reports a conflict | Preserve the named file or settings; resolve the conflict before retrying. Conflicting DLL-injection mods may need their own uninstall process. |
+| Wrapper says its Python runtime is missing | Open the complete portable launcher and Repair the game. |
+| Saves seem missing | Launch through the original Steam entry and prefix. Do not directly run the `.exe`. |
+| Game crashes or no neural frames appear | Check Proton version, GPU access and compiler; compare with `[DlssNr] Enabled=false` in `OptiScaler.ini`. |
+| Need diagnostic files | Use Save logs. Review personal paths before sharing; nothing is sent automatically. |
 
-With the game closed, replace the example directory below:
+The [release page](https://github.com/hassanm0301/AMD-NR---OptiScaler-rocm/releases/tag/linux-v0.2.0)
+contains the native portable app, the smaller `AMDNR-Linux-v0.2.0.tar.gz` addon for
+[advanced command-line use](INSTALL-CLI.md), corresponding vkd3d source, and
+`SHA256SUMS`. GitHub's automatic “Source code” archives do not include the prebuilt
+bridge binaries. Optional integrity check: `sha256sum --ignore-missing -c SHA256SUMS`.
 
-```sh
-python3 linux/manage.py install linux/build/package "/path/to/game/executable/directory"
-```
-
-The installer backs up files it replaces and prints the correct Steam launch
-option. Paste that option into **Properties → General → Launch Options**:
-
-```text
-"/path/to/game/executable/directory/amdnr-linux/run.sh" %command%
-```
-
-If MangoHud and GameMode already work for this game, retain them:
-
-```text
-MANGOHUD=1 gamemoderun "/path/to/game/executable/directory/amdnr-linux/run.sh" %command%
-```
-
-Keep any working game arguments after `%command%`. For The Witcher 3, the tested
-arguments were `--launcher-skip --rt-only`, selecting the DX12 version.
-
-**Launch through Steam.** The wrapper uses the game's existing Steam prefix and
-save locations. Do not start the Windows executable directly or create a new
-prefix. On first launch, it backs up and installs the required shader compiler
-and HIP bridge in that prefix. Keep the game's `amdnr-linux` folder, prefix
-journal, and `.amdnr-linux-backup` directory intact while installed.
-
-## 4. Check that neural rendering is active
-
-Enable a supported upscaler in the game's graphics settings so OptiScaler
-receives frames. Open the OptiScaler menu with **Insert**; the prepared package
-selects the **lmxxf** neural backend. **Home** is the upstream default toggle for
-the neural effect. A menu banner alone does not prove inference is working.
-
-After loading a save, look in **`lmxxf_backend.log`** beside the game executable.
-It should report `hip=1`, your AMD GPU, successful network initialization, and
-increasing **model** and **fresh composition** counts. The successful Stellar
-Blade test recorded 3,599 model frames and 3,594 fresh composed outputs, with
-temporal history and all 71 network blocks active.
-
-Move around, compare Home on/off, and check loading, menus, and image quality.
-Neural rendering has a substantial GPU cost: the tested kernel time was about
-11–13 ms, in addition to the rest of the game's rendering. Frame generation,
-Ray Regeneration, AMDNR Anywhere, and the danielblnc backend are outside this
-release's validation coverage.
-
-## Update or uninstall
-
-Close the game and remove the wrapper path from Steam's launch options. From the
-extracted release folder, run:
-
-```sh
-python3 linux/manage.py uninstall "/path/to/game/executable/directory"
-```
-
-This restores backed-up game files and prefix files and leaves unrelated saves
-and logs alone. **Uninstall the old package before installing a newer release.**
-Do not overwrite the installed folder with a newer archive.
-
-If removal reports a file changed since installation, first copy that file
-somewhere safe. This often happens after changing `OptiScaler.ini` in the menu.
-Then, if you want to discard changes to the package's managed files and restore
-the original backup, use:
-
-```sh
-python3 linux/manage.py uninstall "/path/to/game/executable/directory" --force
-```
-
-## Troubleshooting
-
-| Symptom | What to check |
-| --- | --- |
-| Nothing opens with the wrapper | Confirm the full quoted path, `python3 --version` (3.12+), and that the game works without the wrapper. Keep `%command%` and working game arguments. |
-| Save files appear missing | Launch from Steam with the original Proton prefix; do not run the executable directly. This installer does not move saves. |
-| Legacy ELF HIP bridge error | Uninstall the previous managed installation and install this release. Never mix `amdhip64_7.dll.so` from an older build with the new PE/Unixlib pair. |
-| No HIP device / no neural frames | Check RX 9070 XT support, GPU device permissions, private ROCm files, and `lmxxf_backend.log`. A working Vulkan game alone does not establish ROCm access. |
-| Shader compilation fails | Supply a native **x64 Microsoft** compiler; the known-good version is 10.0.14393.795. Do not use Wine's builtin DLL or a random DLL download site. |
-| Crash when rendering begins | Use the tested Proton version; disable conflicting mods. Compare with `[DlssNr] Enabled=false` in `OptiScaler.ini`, keeping the same prefix. Preserve logs from both runs. |
-| Unsupported Wine Vulkan object ABI | Use GE-Proton11-9. Other Wine layouts are deliberately rejected rather than guessed. |
-| Flatpak Steam / Steam Deck | Not validated. Flatpak additionally needs access to the game, wrapper, Python, and GPU devices inside its sandbox. This release does not change sandbox permissions. |
-
-For a diagnostic Proton log, temporarily add `PROTON_LOG=1` at the beginning of
-the Steam launch option. Collect `OptiScaler.log`, `lmxxf_backend.log`,
-`amd_bridge.log` if present, your GPU/driver/Proton versions, and the exact symptom.
-Review logs for personal paths or identifiers before sharing them.
-
-See the [technical guide](https://github.com/hassanm0301/AMD-NR---OptiScaler-rocm/blob/linux-v0.1.0/linux/README.md)
-for architecture, build instructions, and automated GPU tests. A copy is included
-at `linux/README.md` in the extracted release.
+The app downloads AMDNR 0.3.5.5R4 and ROCm 7.2.4 directly from their publishers,
+checks their pinned hashes, and extracts a private runtime. It does not install
+system packages, change drivers, or run package installation scripts. Those
+components retain their own terms. The native download includes editable launcher
+source, Python/Qt notices, and matching Qt/PySide source archives. See
+`RUNTIME-LICENSES.md` in its root and `addon/linux/RELEASE-LICENSES.md` for details.
+For architecture and GPU tests, see the [technical guide](README.md).

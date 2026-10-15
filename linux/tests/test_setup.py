@@ -166,13 +166,15 @@ class SetupTests(unittest.TestCase):
         runtime.assert_not_called()
         self.assertEqual(archive.read_bytes(), b"user archive")
 
-    def test_missing_ar_prevents_large_downloads(self):
+    def test_binutils_is_not_required_by_preparation(self):
         with patch.object(setup.shutil, "which", return_value=None), \
-                patch.object(setup, "fetch_archive") as download:
-            with self.assertRaisesRegex(ValueError, "binutils"):
-                setup.prepare(self.compiler, output=self.output, cache=self.cache)
-        download.assert_not_called()
-        self.assertFalse(self.output.exists())
+                patch.object(setup, "fetch_archive") as download, \
+                patch.object(setup, "fetch_runtime") as runtime, \
+                patch.object(setup.manage, "stage") as stage:
+            setup.prepare(self.compiler, output=self.output, cache=self.cache)
+        download.assert_called_once()
+        runtime.assert_called_once()
+        stage.assert_called_once()
 
     def test_runtime_failure_cleans_staging_without_changing_game(self):
         archive = self.root / "pinned.zip"

@@ -7,10 +7,12 @@ It reaches native Linux ROCm through a separate `amdhip64_7.so` and Wine's Unix-
 dispatcher. The model and neural runtime are unmodified.
 
 **Installing a prebuilt release? Start with [INSTALL.md](INSTALL.md).** The
-[Linux v0.1.0 release](https://github.com/hassanm0301/AMD-NR---OptiScaler-rocm/releases/tag/linux-v0.1.0)
-includes the tested bridge and patched graphics binaries. Its setup helper
-downloads the pinned upstream runtime/model and private ROCm dependencies;
-you supply a native shader compiler from your own game. The build tools below
+[Linux v0.2.0 release](https://github.com/hassanm0301/AMD-NR---OptiScaler-rocm/releases/tag/linux-v0.2.0)
+includes a portable native Qt launcher, the tested bridge and patched graphics
+binaries. The launcher discovers Steam libraries, finds a native shader compiler,
+and handles downloads, install, repair, update, uninstall and Steam settings.
+The independent UI lives in `linux/native_launcher`; it uses no upstream launcher
+source. See `linux/build-native-launcher.py` to build the portable app. The build tools below
 are needed only when compiling from source or running GPU tests.
 
 **Status: working in tested games; experimental compatibility.** Stellar Blade

@@ -106,7 +106,7 @@ def stage(archive, compiler, output, build, rocm):
         # alongside our binaries; proprietary model/runtime assets stay separate.
         source = bundle / "source/linux"
         source.mkdir(parents=True)
-        for directory in ("bridge", "patches", "tests", "licenses"):
+        for directory in ("bridge", "patches", "tests", "licenses", "native_launcher"):
             if not (ROOT / directory).is_dir():
                 continue
             shutil.copytree(ROOT / directory, source / directory,
