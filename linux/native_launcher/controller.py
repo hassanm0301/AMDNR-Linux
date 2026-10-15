@@ -16,12 +16,12 @@ import tempfile
 import urllib.request
 import uuid
 
-from . import VERSION
+from . import NAME, VERSION
 from .backend import LauncherBackend
 from . import steam
 from .versions import version_key
 
-REPOSITORY = "hassanm0301/AMD-NR---OptiScaler-rocm"
+REPOSITORY = "hassanm0301/AMDNR-Linux"
 RELEASES_URL = f"https://api.github.com/repos/{REPOSITORY}/releases?per_page=30"
 
 
@@ -54,7 +54,7 @@ def available_release(current=VERSION):
     current_version = version_tuple(current)
     if current_version is None:
         raise ValueError("Invalid current Linux release version")
-    request = urllib.request.Request(RELEASES_URL, headers={"Accept": "application/vnd.github+json", "User-Agent": "NR-Linux-Manager"})
+    request = urllib.request.Request(RELEASES_URL, headers={"Accept": "application/vnd.github+json", "User-Agent": "AMDNR-Linux-Manager"})
     with urllib.request.urlopen(request, timeout=30) as response:
         releases = json.load(response)
     candidates = []
@@ -89,7 +89,7 @@ def obtain_addon(release, cache, progress):
         with tempfile.NamedTemporaryFile(dir=archive.parent, delete=False) as target:
             pending = Path(target.name)
             try:
-                request = urllib.request.Request(release["url"], headers={"User-Agent": "NR-Linux-Manager"})
+                request = urllib.request.Request(release["url"], headers={"User-Agent": "AMDNR-Linux-Manager"})
                 with urllib.request.urlopen(request, timeout=60) as source:
                     shutil.copyfileobj(source, target)
                 target.flush()
@@ -172,6 +172,8 @@ def persistent_python(data_dir):
 class Controller:
     def __init__(self, release_root, data_dir=None, cache_dir=None, steam_roots=None, progress=None):
         self.release_root = Path(release_root).resolve()
+        # Keep the original storage identity so upgrades retain settings, backups,
+        # recovery journals and the shared Python used by installed games.
         self.data_dir = Path(data_dir or Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "nr-linux-manager").expanduser().resolve()
         self.cache_dir = Path(cache_dir or Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "nr-linux-manager").expanduser().resolve()
         self.steam_roots = steam_roots
@@ -381,7 +383,7 @@ class Controller:
                             and path.stat().st_size < 50 * 1024**2):
                         output.write(path, name)
                 output.writestr("diagnostics.json", json.dumps(diagnostics, indent=2, default=str) + "\n")
-                output.writestr("launcher.txt", f"NR Linux Manager {VERSION}\nGame: {game.name}\nApp ID: {game.appid or 'manual'}\n"
+                output.writestr("launcher.txt", f"{NAME} {VERSION}\nGame: {game.name}\nApp ID: {game.appid or 'manual'}\n"
                                 + diagnostics.get("startup_summary", "Runtime activation has not been verified.") + "\n")
             temporary.replace(destination)
         finally:

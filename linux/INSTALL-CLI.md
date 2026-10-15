@@ -37,7 +37,7 @@ keep backups of your configurations. Test one change at a time.
 
 ## 1. Download and extract
 
-From this fork's [Linux v0.2.0 release](https://github.com/hassanm0301/AMD-NR---OptiScaler-rocm/releases/tag/linux-v0.2.0),
+From this fork's [Linux v0.2.0 release](https://github.com/hassanm0301/AMDNR-Linux/releases/tag/linux-v0.2.0),
 download **`AMDNR-Linux-v0.2.0.tar.gz`** and **`SHA256SUMS`** into the same folder.
 The separate vkd3d source archive is for rebuilding; normal installation does
 not require it. GitHub's automatically generated “Source code” archives do not
@@ -182,6 +182,6 @@ the Steam launch option. Collect `OptiScaler.log`, `lmxxf_backend.log`,
 `amd_bridge.log` if present, your GPU/driver/Proton versions, and the exact symptom.
 Review logs for personal paths or identifiers before sharing them.
 
-See the [technical guide](https://github.com/hassanm0301/AMD-NR---OptiScaler-rocm/blob/linux-v0.2.0/linux/README.md)
+See the [technical guide](https://github.com/hassanm0301/AMDNR-Linux/blob/linux-v0.2.0/linux/README.md)
 for architecture, build instructions, and automated GPU tests. A copy is included
 at `linux/README.md` in the extracted release.

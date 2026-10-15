@@ -1,6 +1,6 @@
-# NR Linux Manager — native Linux installation
+# AMDNR Linux Manager — native Linux installation
 
-**Download [NR-Linux-Manager-v0.2.1-linux-x86_64.tar.gz](https://github.com/hassanm0301/AMD-NR---OptiScaler-rocm/releases/tag/linux-v0.2.1), extract it, and open `Start.sh`.**
+**Download [NR-Linux-Manager-v0.2.1-linux-x86_64.tar.gz](https://github.com/hassanm0301/AMDNR-Linux/releases/tag/linux-v0.2.1), extract it, and open `Start.sh`.**
 Python and the native Qt interface are included. No Proton setup is needed for
 the launcher itself, and no compiling or system ROCm installation is needed.
 If your file manager opens the script as text, choose “Run as program”, or open a
@@ -14,7 +14,7 @@ it does not include or port the restricted upstream Windows launcher.
 ## Install a Steam game
 
 1. First check that the game launches and loads your save normally with Proton.
-2. Open **NR Linux Manager**. It detects installed Steam games across library
+2. Open **AMDNR Linux Manager**. It detects installed Steam games across library
    drives. Select a game. If asked, choose its actual **64-bit DirectX 12 game
    executable**, rather than a store launcher.
 3. Close the game and **exit Steam completely**. Steam must be closed while its
@@ -68,6 +68,10 @@ The manager stores settings, Steam backups, recovery journals, saved
 configurations and a small shared Python runtime in
 `~/.local/share/nr-linux-manager` (or `$XDG_DATA_HOME/nr-linux-manager`). Downloads
 are cached under `~/.cache/nr-linux-manager` (or `$XDG_CACHE_HOME/nr-linux-manager`).
+These storage paths retain their original names for compatibility with existing
+installations. Older release archives also retain their published filenames;
+new launcher builds are branded AMDNR Linux Manager.
+
 The portable app folder may be moved after installation. **Keep the manager's
 data folder while any patched game remains installed**: its shared Python runtime
 is used to start those games. To remove the app entirely, uninstall each patched
@@ -127,7 +131,7 @@ and management, not a new neural model.
 | No AMDNR message or Insert menu | Confirm the selected folder matches the copy Steam launches, then Repair. Existing REFramework may use the same Insert key; change its menu key to Delete if both overlays open. |
 | Need diagnostic files | Use Save logs. The export includes installation health, wrapper errors and available startup logs, even if the host never loaded. Review personal paths before sharing; nothing is sent automatically. |
 
-The [release page](https://github.com/hassanm0301/AMD-NR---OptiScaler-rocm/releases/tag/linux-v0.2.1)
+The [release page](https://github.com/hassanm0301/AMDNR-Linux/releases/tag/linux-v0.2.1)
 contains the native portable app, the smaller `AMDNR-Linux-v0.2.1.tar.gz` addon for
 [advanced command-line use](INSTALL-CLI.md), corresponding vkd3d source, and
 `SHA256SUMS`. GitHub's automatic “Source code” archives do not include the prebuilt

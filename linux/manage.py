@@ -123,7 +123,7 @@ def stage(archive, compiler, output, build, rocm):
             shutil.copy2(ROOT.parent / relative, destination)
         (bundle / "SOURCE.txt").write_text(
             "Modified Linux fork of AMDNR by 3zwr1 — https://github.com/3zwr1/AMD-NR---OptiScaler\n"
-            "Linux fork: https://github.com/hassanm0301/AMD-NR---OptiScaler-rocm\n"
+            "Linux fork: https://github.com/hassanm0301/AMDNR-Linux\n"
             f"Host/runtime: AMDNR {version}, {release_url}\n"
             f"Archive SHA-256: {release_sha}\n"
             "Linux bridge: GPL-3.0-or-later; vkd3d-proton patch: LGPL-2.1-or-later.\n"

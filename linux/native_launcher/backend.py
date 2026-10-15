@@ -42,6 +42,7 @@ class ConflictError(BackendError):
 
 _module_lock = threading.Lock()
 _missing = object()
+# Persistent ownership marker: retain its original bytes across branding changes.
 _backup_marker = b"NR Linux Manager original backups\n"
 
 

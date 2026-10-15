@@ -1,4 +1,4 @@
-# NR Linux Manager: portable runtime notices and source
+# AMDNR Linux Manager: portable runtime notices and source
 
 The native launcher is an independent GPL-3.0-or-later Python application. Its
 complete editable source is in `addon/linux/launcher.py` and
@@ -94,7 +94,7 @@ XCB/Wayland libraries are required. The launcher respects `QT_QPA_PLATFORM` for
 diagnostics; it does not force Wayland. For example, a headless check can use
 `QT_QPA_PLATFORM=offscreen ./Start.sh --snapshot /tmp/manager.png`.
 
-The launcher can preserve a Python-only copy in the user's NR Linux Manager data
+The launcher can preserve a Python-only copy in the user's AMDNR Linux Manager data
 directory for game launch scripts. That copy excludes Qt and all `site-packages`
 but retains the Python standard library, build metadata and license notices.
 The original portable folder can then be moved or deleted without breaking the

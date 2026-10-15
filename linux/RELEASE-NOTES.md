@@ -77,7 +77,7 @@ do not establish support for additional games.
 
 **Download `NR-Linux-Manager-v0.2.1-linux-x86_64.tar.gz`, extract it, and open `Start.sh`.** Python and Qt are included. Select a game, close the game and Steam, and choose **Install neural rendering**. Launch through Steam using your existing Proton version and saves. Enable DLSS, FSR or XeSS in the game; **Insert** opens OptiScaler and **Home** toggles neural rendering.
 
-[Installation, update and removal guide](https://github.com/hassanm0301/AMD-NR---OptiScaler-rocm/blob/linux-v0.2.1/linux/INSTALL.md).
+[Installation, update and removal guide](https://github.com/hassanm0301/AMDNR-Linux/blob/linux-v0.2.1/linux/INSTALL.md).
 
 ## What changed
 

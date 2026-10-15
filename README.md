@@ -1,9 +1,15 @@
-# AMDNR — DLSS 5 Neural Rendering on AMD (OptiScaler build) — v0.3.5.5
+# AMDNR for Linux (AMDNR-Linux)
 
-> **Modified Linux fork of AMDNR by 3zwr1.** This repository adds an experimental
+> **AMDNR-Linux is a modified Linux fork of AMDNR by 3zwr1.** This repository adds an experimental
 > native ROCm bridge. See [Linux setup and validation](linux/README.md) for the
 > tested configuration and current limitations. The upstream release notes below
 > describe AMDNR; they do not imply Linux game compatibility.
+
+**AMDNR Linux Manager** provides the native launcher. Start with the
+[Linux installation guide](linux/INSTALL.md); see
+[releases](https://github.com/hassanm0301/AMDNR-Linux/releases) for downloads.
+
+## Upstream AMDNR documentation — v0.3.5.5
 
 **English** | [中文](README.zh-CN.md) | [Português](README.pt-BR.md) | [Español](README.es.md) | [العربية](README.ar.md) | [Français](README.fr.md) | [Italiano](README.it.md) | [Русский](README.ru.md) | [Polski](README.pl.md)
 
@@ -351,7 +357,7 @@ the host refuses it). The capture host is AMDNR's own build, downloaded from AMD
 
 This fork adds an experimental Linux ROCm bridge for lmxxf Neural Rendering.
 **Native Linux launcher: [download and installation guide](linux/INSTALL.md).**
-NR Linux Manager detects Steam games and handles Install, Repair, Update and Uninstall,
+AMDNR Linux Manager detects Steam games and handles Install, Repair, Update and Uninstall,
 including verified downloads, backups and Steam launch options. Extract the portable app
 and open `Start.sh`; Python and Qt are included.
 Build and test details: [linux/README.md](linux/README.md).
