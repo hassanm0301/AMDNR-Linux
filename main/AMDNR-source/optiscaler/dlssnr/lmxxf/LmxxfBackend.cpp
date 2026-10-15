@@ -1,5 +1,6 @@
 // Copyright (c) 2026 3zwr1 (AMDNR). Part of AMDNR (GPL-3.0; see Licenses/AMDNR_NOTICE.txt).
 // SPDX-License-Identifier: GPL-3.0-or-later
+// Modified for the Linux port: fence-verified resource retirement and readback failure handling.
 #include "pch.h"
 #include "LmxxfBackend.h"
 #include "LmxxfTierPolicy.h" // (0.3.4) the network size tier rules (PlanLmxxfSize, the small-tier policy); pure
@@ -22,6 +23,7 @@
 #include "../amd/NrCompose.h"
 #include "../amd/AmdBridge.h"
 #include "../amd/ComIdentity.h"
+#include "../amd/FenceWait.h"
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -778,7 +780,8 @@ ComPtr<ID3D12Resource> ReadbackBuffer(ID3D12Device* d, UINT64 bytes)
     rd.SampleDesc.Count = 1;
     rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
     ComPtr<ID3D12Resource> r;
-    d->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&r));
+    Check(d->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                     IID_PPV_ARGS(&r)), "stats readback buffer");
     return r;
 }
 // One row of a small texture into a readback buffer at `offset` (row pitch 256).
@@ -1118,7 +1121,7 @@ struct Backend::Impl
     ComPtr<ID3D12Fence> drainFence; // resolution change: wait for the queue before textures are freed
     UINT64 drainValue = 0;
     HANDLE drainEvent = nullptr;
-    bool loggedDrain = false, loggedDrainTimeout = false;
+    bool loggedDrain = false;
     // #5 still-surface steadiness: the value and state last logged (-1 = never), so the line follows a change.
     float loggedStaticRelax = -1.f;
     int loggedStaticRelaxState = -1;
@@ -1420,52 +1423,56 @@ struct Backend::Impl
     // to the graveyard for eight frames; the pass's do not, so the queue is drained first, once
     // per change. atExit (C1-A, 0.3.3.2 rebuild): the same 2 s bound replaces the runtime's 30 s drain at process exit,
     // with its own log text.
-    void DrainQueue(bool atExit = false)
+    bool DrainQueue(bool atExit = false)
     {
         if (!queue)
-            return;
+            return false;
         // A removed device completes nothing: no Signal, no wait (C2-F, 0.3.3.2 rebuild).
         if (FAILED(device->GetDeviceRemovedReason()))
         {
             if (atExit)
                 Log("lmxxf: exit: the D3D12 device was removed - no queue drain");
-            return;
+            return false;
         }
         if (!drainFence)
         {
             if (FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&drainFence))))
-                return;
-            drainEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+                return false;
         }
         const UINT64 v = ++drainValue;
         if (FAILED(queue->Signal(drainFence.Get(), v)))
-            return;
-        if (drainFence->GetCompletedValue() < v && drainEvent)
+            return false;
+        bool armed = false;
+        DWORD waitResult = WAIT_OBJECT_0;
+        const bool complete = AmdPreSr::WaitForFenceCompletion(v,
+            [&] { return drainFence->GetCompletedValue(); },
+            [&] {
+                if (!drainEvent)
+                    drainEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+                armed = drainEvent && SUCCEEDED(drainFence->SetEventOnCompletion(v, drainEvent));
+                return armed;
+            },
+            [&] { waitResult = WaitForSingleObject(drainEvent, 2000); });
+        if (armed && (waitResult != WAIT_OBJECT_0 || !complete))
         {
-            drainFence->SetEventOnCompletion(v, drainEvent);
-            if (WaitForSingleObject(drainEvent, 2000) != WAIT_OBJECT_0)
-            {
-                // Fence hardening: the registration above is still armed and the auto-reset event
-                // would be set late, satisfying the NEXT drain's wait before its own value arrives.
-                // The old event is left to the fence (leaked on purpose, never closed: a closed
-                // handle value can be reused by something else) and a fresh one is used from now on.
-                drainEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-                if (atExit)
-                    Log("lmxxf: exit: the queue drain timed out after 2 s - the process exits with the runtime's work in "
-                        "flight");
-                else if (!loggedDrainTimeout)
-                {
-                    loggedDrainTimeout = true;
-                    Log("lmxxf: resolution change: the queue drain timed out after 2 s; its event is left to the fence "
-                        "and a new one is used, so a late signal cannot end the next drain early (noted once)");
-                }
-            }
+            // Even if the fence just completed after a timeout, its event may
+            // still be signalled late. Never reuse that registration's handle.
+            // Leave it alive for the fence; shutdown creates a fresh one if needed.
+            drainEvent = nullptr;
+        }
+        if (!complete)
+        {
+            if (atExit)
+                Log("lmxxf: exit: queue completion was not confirmed within the 2 s wait bound; "
+                    "resources are left to the process");
+            return false;
         }
         if (!loggedDrain && !atExit)
         {
             loggedDrain = true;
             Log("lmxxf: resolution change: the queue was drained before the temporal pass reallocated");
         }
+        return true;
     }
     void Log(const std::string& s)
     {
@@ -1602,7 +1609,8 @@ struct Backend::Impl
     {
         for (auto it = retired.begin(); it != retired.end();)
         {
-            if (it->oldFence->GetCompletedValue() < it->value || it->newFence->GetCompletedValue() < it->value)
+            if (!AmdPreSr::FenceReached(it->oldFence->GetCompletedValue(), it->value) ||
+                !AmdPreSr::FenceReached(it->newFence->GetCompletedValue(), it->value))
             {
                 ++it;
                 continue;
@@ -2348,6 +2356,27 @@ ID3D12Resource* Backend::Impl::Record(ID3D12GraphicsCommandList* cmd, const AmdP
             inFlight = false;
             netOut = nullptr;
         }
+        if (reallocating)
+        {
+            // Vulkan's bridge has already waited for the previous frame on the CPU.
+            // A new Signal there would sit behind the game's next vkQueueSubmit.
+            if (cfg.lmxxfCpuWait)
+            {
+                if (!loggedVkDrainSkip)
+                {
+                    loggedVkDrainSkip = true;
+                    Log("lmxxf vk: resolution change - queue drain skipped (the bridge already waited for the previous "
+                        "frame's D3D12 work on the CPU; a queue signal now would wait for the game's next submit)");
+                }
+            }
+            else if (!DrainQueue())
+            {
+                // Record's outer handler disables NR and keeps the process-lifetime
+                // backend alive. Do not resize or free anything still used by the GPU.
+                throw std::runtime_error("resolution change: queue completion was not confirmed; "
+                                         "NR stopped with the previous resources retained");
+            }
+        }
         Bury(fed);
         Bury(composeDelta); // RenoDX mode's delta, at the model's size like fed; remade on its next use (never made in Classic)
         Bury(full);
@@ -2369,23 +2398,6 @@ ID3D12Resource* Backend::Impl::Record(ID3D12GraphicsCommandList* cmd, const AmdP
         motionFed = Texture(device.Get(), mw, mh, DXGI_FORMAT_R16G16_FLOAT);
         lastFedFrame = ~0ull;
         allocFrame = frames;
-        if (reallocating)
-        {
-            // Vulkan bridge: the drain's Signal would sit behind this frame's queue Wait on the game's
-            // next vkQueueSubmit (2 s lost for nothing); the bridge already waited on the CPU for the
-            // previous frame's D3D12 work at the top of this Evaluate, which is what the drain is for.
-            if (cfg.lmxxfCpuWait)
-            {
-                if (!loggedVkDrainSkip)
-                {
-                    loggedVkDrainSkip = true;
-                    Log("lmxxf vk: resolution change - queue drain skipped (the bridge already waited for the previous "
-                        "frame's D3D12 work on the CPU; a queue signal now would wait for the game's next submit)");
-                }
-            }
-            else
-                DrainQueue();
-        }
         temporal->Prepare(w, h);
         const auto cd = f.colour->GetDesc();
         // The memory reading is taken after our own textures were remade and before the runtime
@@ -3693,7 +3705,7 @@ ID3D12Resource* Backend::Impl::Record(ID3D12GraphicsCommandList* cmd, const AmdP
         if (statsWritten[prev])
         {
             void* mapped = nullptr;
-            const D3D12_RANGE range { 0, 260 };
+            const D3D12_RANGE range { 0, 264 }; // exposure and raw exposure occupy bytes 256..263
             if (SUCCEEDED(statsRead[prev]->Map(0, &range, &mapped)) && mapped)
             {
                 UINT vals[12] {};
