@@ -5,7 +5,7 @@ python=python3
 if [[ -f "$root/python-runtime.path" ]]; then
     IFS= read -r python < "$root/python-runtime.path"
     if [[ "$python" != /* || ! -x "$python" ]]; then
-        echo "NR Linux Manager: shared Python runtime is missing. Open the launcher and Repair this game." >&2
+        echo "AMDNR Linux Manager: shared Python runtime is missing. Open the launcher and Repair this game." >&2
         exit 1
     fi
 fi

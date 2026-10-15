@@ -280,7 +280,7 @@ def build(release, output, cache, version, keep_tree=None):
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".nr-linux-build-", dir=output.parent) as temporary:
         work = Path(temporary)
-        bundle = work / f"NR-Linux-Manager-v{version}-x86_64"
+        bundle = work / f"AMDNR-Linux-Manager-v{version}-x86_64"
         bundle.mkdir()
         shutil.copytree(release, bundle / "addon", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
         runtime = bundle / "runtime/python"
@@ -326,7 +326,7 @@ def build(release, output, cache, version, keep_tree=None):
         (bundle / "Start.sh").write_text(START)
         (bundle / "Start.sh").chmod(0o755)
         metadata = {
-            "name": "NR Linux Manager", "version": version, "platform": "linux-x86_64",
+            "name": "AMDNR Linux Manager", "version": version, "platform": "linux-x86_64",
             "python": PYTHON_VERSION, "python_build": PYTHON_BUILD, "qt": QT_VERSION,
             "python_zstandard": "0.25.0",
             "minimum_glibc": "2.34", "qt_libraries": libraries,
@@ -336,7 +336,7 @@ def build(release, output, cache, version, keep_tree=None):
         # Runtime identity follows the official Python build, independent of GUI updates.
         (runtime / "NRL-RUNTIME-ID").write_text(f"cpython-{PYTHON_VERSION}-{PYTHON_BUILD}-x86_64\n")
         (bundle / "README.txt").write_text(
-            "NR Linux Manager\n\nExtract the whole folder, then double-click Start.sh or run ./Start.sh.\n"
+            "AMDNR Linux Manager\n\nExtract the whole folder, then double-click Start.sh or run ./Start.sh.\n"
             "The interface runs natively on Linux; Python and Qt are included.\n"
             "Requires x86_64 Linux, glibc 2.34+, and an X11 or Wayland desktop.\n"
             "The system C++ runtime must provide GLIBCXX_3.4.29 (GCC 11 or newer).\n"
@@ -352,7 +352,7 @@ def build(release, output, cache, version, keep_tree=None):
             "import sys,ssl,sqlite3,lzma,zstandard; from PySide6 import QtCore,QtGui,QtWidgets; "
             "assert sys.version_info[:3] == (3,12,15); assert QtCore.__version__ == '6.12.0'; "
             "assert zstandard.ZstdDecompressor().decompress(zstandard.ZstdCompressor().compress(b'NR Linux')) == b'NR Linux'; "
-            "app=QtWidgets.QApplication([]); w=QtWidgets.QLabel('NR Linux Manager'); "
+            "app=QtWidgets.QApplication([]); w=QtWidgets.QLabel('AMDNR Linux Manager'); "
             "w.show(); app.processEvents(); assert not w.grab().isNull(); print('Portable Qt Widgets smoke: PASS')",
             env=env)
         # Keep the archive free of machine-local bytecode and temporary build paths.

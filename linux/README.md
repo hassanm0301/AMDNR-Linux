@@ -1,13 +1,13 @@
-# Neural rendering on Linux
+# AMDNR for Linux (AMDNR-Linux)
 
-This is a modified Linux fork of **AMDNR by 3zwr1**, implementing the ROCm bridge
+AMDNR-Linux is a modified Linux fork of **AMDNR by 3zwr1**, implementing the ROCm bridge
 requested in [upstream issue #9](https://github.com/3zwr1/AMD-NR---OptiScaler/issues/9).
 The Windows lmxxf neural runtime calls a PE-format Wine builtin `amdhip64_7.dll`.
 It reaches native Linux ROCm through a separate `amdhip64_7.so` and Wine's Unix-call
 dispatcher. The model and neural runtime are unmodified.
 
 **Installing a prebuilt release? Start with [INSTALL.md](INSTALL.md).** The
-[Linux v0.2.1 release](https://github.com/hassanm0301/AMD-NR---OptiScaler-rocm/releases/tag/linux-v0.2.1)
+[Linux v0.2.1 release](https://github.com/hassanm0301/AMDNR-Linux/releases/tag/linux-v0.2.1)
 includes a portable native Qt launcher, the tested bridge and patched graphics
 binaries. The launcher discovers Steam libraries, finds a native shader compiler,
 and handles downloads, install, repair, update, uninstall and Steam settings.

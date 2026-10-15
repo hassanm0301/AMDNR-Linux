@@ -2,7 +2,7 @@
 
 This is a modified Linux compatibility add-on for **AMDNR by 3zwr1 —
 https://github.com/3zwr1/AMD-NR---OptiScaler**. It is published by the
-[Linux fork](https://github.com/hassanm0301/AMD-NR---OptiScaler-rocm), not as an
+[Linux fork](https://github.com/hassanm0301/AMDNR-Linux), not as an
 official upstream AMDNR release. The OptiScaler contributors and all upstream
 acknowledgments retain their credit. No endorsement by AMD, NVIDIA, Microsoft,
 Valve, Wine or the other upstream projects is implied.

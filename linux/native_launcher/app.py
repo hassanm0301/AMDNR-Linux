@@ -152,7 +152,7 @@ class SettingsDialog(QDialog):
         row = QHBoxLayout()
         row.setSpacing(8)
         row.addWidget(window.button("Installation guide ↗", lambda: QDesktopServices.openUrl(QUrl(
-            "https://github.com/hassanm0301/AMD-NR---OptiScaler-rocm/blob/main/linux/INSTALL.md"))))
+            "https://github.com/hassanm0301/AMDNR-Linux/blob/main/linux/INSTALL.md"))))
         row.addWidget(window.button("Licenses and source", self.open_notices))
         about.addLayout(row)
         body_layout.addStretch()
@@ -220,7 +220,7 @@ class SettingsDialog(QDialog):
             button.setEnabled(True)
 
     def open_release(self):
-        QDesktopServices.openUrl(QUrl("https://github.com/hassanm0301/AMD-NR---OptiScaler-rocm/releases"))
+        QDesktopServices.openUrl(QUrl("https://github.com/hassanm0301/AMDNR-Linux/releases"))
 
     def open_notices(self):
         portable = os.environ.get("NRL_PORTABLE_ROOT")
@@ -639,7 +639,7 @@ class Window(QMainWindow):
     def save_logs(self):
         if self.busy or not self.game:
             return
-        path, _ = QFileDialog.getSaveFileName(self, "Save logs — review before sharing", str(Path.home() / "nr-linux-logs.zip"), "ZIP archive (*.zip)")
+        path, _ = QFileDialog.getSaveFileName(self, "Save logs — review before sharing", str(Path.home() / "amdnr-linux-logs.zip"), "ZIP archive (*.zip)")
         if path:
             self.work(lambda: self.controller.collect_logs(self.game, Path(path)), lambda result: self.report(f"Logs saved to {result}. Review personal paths before sharing."))
 
