@@ -13,6 +13,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import shutil
+import stat
 import sys
 import tempfile
 import threading
@@ -281,7 +282,8 @@ class LauncherBackend:
         game = self._game(game_dir)
         result = dict(game_dir=str(game), installed=False, status="not_installed", version=None, addon_version=None,
                       host_version=None, release_root=None,
-                      modified=[], missing=[], conflicts=[], config_modified=False,
+                      modified=[], missing=[], conflicts=[], health_issues=[], config_modified=False,
+                      runtime_status="unverified",
                       running=self._running(game), recovery_needed=(self._transaction_dir(game) / "journal.json").exists())
         try:
             record = self._record(game)
@@ -306,7 +308,8 @@ class LauncherBackend:
                             result["conflicts"].append(f"Missing original backup: {entry['path']}")
                         elif entry.get("backup_sha256") and _sha(backup) != entry["backup_sha256"]:
                             result["conflicts"].append(f"Original backup was modified: {entry['path']}")
-                if result["missing"] or result["modified"]:
+                self._inspect_launch_support(game, result)
+                if result["missing"] or result["modified"] or result["health_issues"]:
                     result["status"] = "needs_repair"
             elif (game / self.manage.BACKUP).exists():
                 result["conflicts"].append("Original backups exist without an installation record.")
@@ -316,7 +319,34 @@ class LauncherBackend:
             result["status"] = "conflict"
         if result["recovery_needed"]:
             result["status"] = "interrupted"
+        result["installation_health"] = "healthy" if result["status"] == "installed" else result["status"]
         return result
+
+    def _inspect_launch_support(self, game, result):
+        """Read launch prerequisites without executing code or inferring runtime success."""
+        wrapper = self._safe(game, "amdnr-linux/run.sh")
+        if wrapper.is_file() and not os.access(wrapper, os.X_OK):
+            result["health_issues"].append("The game launch script is not executable. Repair the installation.")
+        runtime_path = self._safe(game, "amdnr-linux/python-runtime.path")
+        # Source/legacy installations intentionally use the system Python and
+        # have no durable-runtime file. Do not impose the portable layout on them.
+        if runtime_path.is_file():
+            with runtime_path.open("rb") as source:
+                raw = source.read(4097)
+            try:
+                value = raw.decode("utf-8").rstrip("\r\n")
+                if (len(raw) > 4096 or not value or any(ord(c) < 32 for c in value)
+                        or not Path(value).is_absolute()):
+                    raise ValueError("invalid runtime path")
+                runtime = Path(value)
+                if not runtime.is_file() or not os.access(runtime, os.X_OK):
+                    result["health_issues"].append(
+                        "The shared Python runtime is missing or cannot run. Repair using the complete launcher download.")
+            except (UnicodeError, ValueError):
+                result["health_issues"].append("The shared Python runtime path is invalid. Repair the installation.")
+        for entry in self._prefix_entries(game):
+            if not Path(entry["path"]).is_file():
+                result["health_issues"].append(f"A managed Proton prefix file is missing: {entry['path']}. Repair the installation.")
 
     def _find_compiler(self, supplied, roots):
         if supplied is not None:
@@ -580,7 +610,8 @@ class LauncherBackend:
                 if existed:
                     entry["backup_sha256"] = _sha(backup if prior and name in installed else target)
                 files.append(entry)
-                if not preserve and (not target.is_file() or _sha(target) != checksum):
+                restore_wrapper_mode = name == "amdnr-linux/run.sh" and target.is_file() and not os.access(target, os.X_OK)
+                if not preserve and (not target.is_file() or _sha(target) != checksum or restore_wrapper_mode):
                     operations.append(self._operation(target, source=info["source"]))
             for name, prior in previous.items():
                 if name in candidate or name not in installed:
@@ -707,7 +738,51 @@ class LauncherBackend:
                       state_dir=str(self.state_dir), saved_settings=str(self.state_dir / "configs" / (self._key(game) + ".ini")))
         try:
             result["prefixes"] = [entry["path"] for entry in self._prefix_entries(game)]
-        except (OSError, ConflictError) as error:
+        except (OSError, ValueError, ConflictError) as error:
             result["prefix_error"] = str(error)
-        result["logs"] = [str(game / name) for name in ("OptiScaler.log", "lmxxf_backend.log", "amd_bridge.log") if (game / name).is_file()]
+        evidence, errors = self._startup_evidence(game)
+        result["startup_evidence"] = evidence
+        result["startup_errors"] = errors
+        result["logs"] = [entry["path"] for entry in evidence]
+        result["startup_summary"] = (
+            "Stored startup logs are historical evidence. Current host loading and neural rendering have not been verified."
+            if evidence else
+            "No supported startup logs were found. Host loading and neural rendering have not been verified.")
         return result
+
+    def _startup_evidence(self, game):
+        """Collect bounded tails of known logs, never following links or executing them."""
+        names = ["OptiScaler.log", "lmxxf_backend.log", "amd_bridge.log", "amdnr_crash.log",
+                 "amdnr-linux/launch.log", "amdnr-linux/startup.log", "amd_presr.log",
+                 "amdnr-crash-trace.log"]
+        # Previous host sessions help with early failures that truncate the main
+        # log. Cap both discovery and the files read in a mod-heavy game folder.
+        try:
+            with os.scandir(game) as directory:
+                for index, entry in enumerate(directory):
+                    if index >= 512:
+                        break
+                    if re.fullmatch(r"OptiScaler\.previous(?:-\d+)?\.[^/\\]{1,160}\.log", entry.name):
+                        names.append(entry.name)
+        except OSError as error:
+            return [], [str(error)]
+        evidence, errors = [], []
+        for name in names:
+            if len(evidence) == 8:
+                break
+            try:
+                path = self._safe(game, name)
+                if not path.exists():
+                    continue
+                descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                with os.fdopen(descriptor, "rb") as source:
+                    info = os.fstat(source.fileno())
+                    if not stat.S_ISREG(info.st_mode):
+                        continue
+                    source.seek(max(0, info.st_size - 16384))
+                    tail = source.read(16384).decode("utf-8", errors="replace")
+                evidence.append(dict(name=name, path=str(path), size=info.st_size,
+                                     modified_ns=info.st_mtime_ns, tail=tail, truncated=info.st_size > 16384))
+            except (OSError, ValueError, ConflictError) as error:
+                errors.append(f"{name}: {error}")
+        return evidence, errors

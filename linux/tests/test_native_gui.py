@@ -10,10 +10,10 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 try:
-    from PySide6.QtCore import Qt
+    from PySide6.QtCore import QPoint, Qt
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication, QMessageBox
-    from native_launcher.app import Window, STYLE
+    from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton
+    from native_launcher.app import BUTTON_HEIGHT, ROW_HEIGHT, SettingsDialog, Window, STYLE
     QT = True
 except ImportError:
     QT = False
@@ -31,13 +31,18 @@ class FakeController:
         self.installed = False
         self.operations = []
         self.conflicts = []
+        self.health_issues = []
+        self.missing = []
+        self.modified = []
         self.pending = False
+        self.latest_release = None
 
     def discover(self):
         return self.games
 
     def inspect(self, directory):
-        return dict(installed=self.installed, modified=[], missing=[], conflicts=self.conflicts)
+        return dict(installed=self.installed, modified=self.modified, missing=self.missing, conflicts=self.conflicts,
+                    health_issues=self.health_issues, runtime_status="unverified")
 
     def operate(self, action, game):
         self.operations.append((action, game.appid))
@@ -47,12 +52,22 @@ class FakeController:
     def pending_operation(self, game):
         return self.pending
 
+    def check_updates(self):
+        return self.latest_release
+
+    def save_settings(self):
+        pass
+
+    def choose_compiler(self, path):
+        self.settings["compiler"] = path
+
 
 @unittest.skipUnless(QT, "Optional GUI tests need PySide6")
 class GuiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
+        cls.app.setStyle("Fusion")
         cls.app.setStyleSheet(STYLE)
 
     def setUp(self):
@@ -88,6 +103,31 @@ class GuiTests(unittest.TestCase):
         self.window.search.setText("adventure")
         self.assertTrue(self.window.library.item(0).isHidden())
         self.assertFalse(self.window.library.item(1).isHidden())
+        self.wait_idle()
+        self.assertEqual(self.window.title.text(), "Another adventure")
+        self.assertFalse(self.window.install.isEnabled())
+
+    def test_empty_search_and_library_clear_selected_details(self):
+        self.window.search.setText("no such game")
+        self.wait_idle()
+        self.assertIsNone(self.window.game)
+        self.assertEqual(self.window.path.text(), "")
+        self.assertEqual(self.window.status.text(), "")
+        self.assertFalse(self.window.actions.isVisible())
+        self.assertFalse(self.window.browse.isVisible())
+        self.assertFalse(self.window.library.isVisible())
+        self.assertIn("No matching", self.window.empty_library.text())
+        self.window.search.clear()
+        self.wait_idle()
+        self.assertEqual(self.window.game.appid, "12")
+        self.assertTrue(self.window.actions.isVisible())
+        self.controller.games = []
+        self.window.refresh()
+        self.wait_idle()
+        self.assertIsNone(self.window.game)
+        self.assertEqual(self.window.path.text(), "")
+        self.assertFalse(self.window.actions.isVisible())
+        self.assertIn("No installed games", self.window.empty_library.text())
 
     def test_ambiguous_executable_requires_selection(self):
         self.window.library.setCurrentRow(1)
@@ -95,12 +135,27 @@ class GuiTests(unittest.TestCase):
         self.assertFalse(self.window.install.isEnabled())
         self.assertIn("Choose", self.window.status.text())
 
+    def test_ambiguous_steam_library_needs_explicit_manual_game(self):
+        self.controller.games = [SteamGame("12", "Two copies", self.controller.root,
+                                          self.controller.root, self.controller.root, None,
+                                          library_ambiguous=True)]
+        self.window.refresh()
+        self.wait_idle()
+        self.assertIn("Multiple Steam copies", self.window.status.text())
+        self.assertIn("Add game", self.window.description.text())
+        self.assertFalse(self.window.install.isEnabled())
+        self.assertFalse(self.window.launch.isEnabled())
+        self.assertFalse(self.window.browse.isEnabled())
+
     def test_install_repair_update_uninstall_buttons(self):
         with patch("native_launcher.app.steam.steam_is_running", return_value=False):
             QTest.mouseClick(self.window.install, Qt.MouseButton.LeftButton)
             self.wait_idle()
             self.assertFalse(self.window.install.isEnabled())
             self.assertTrue(self.window.repair.isEnabled())
+            self.assertIn("Files verified", self.window.status.text())
+            self.assertIn("Enable DLSS, FSR or XeSS", self.window.description.text())
+            self.assertIn("Insert opens OptiScaler", self.window.description.text())
             for button in (self.window.repair, self.window.update):
                 QTest.mouseClick(button, Qt.MouseButton.LeftButton)
                 self.wait_idle()
@@ -132,6 +187,127 @@ class GuiTests(unittest.TestCase):
     def test_main_buttons_have_unclipped_content_height(self):
         for button in (self.window.install, self.window.repair, self.window.browse, self.window.uninstall):
             self.assertGreaterEqual(button.height(), button.fontMetrics().height() + 16)
+
+    def test_runtime_health_issues_require_repair_without_claiming_inference(self):
+        self.controller.installed = True
+        self.controller.health_issues = ["The launch wrapper is not executable.", "The Python runtime is missing."]
+        self.window.select_game(self.window.library.currentItem())
+        self.wait_idle()
+        self.assertEqual(self.window.status.text(), "Repair recommended")
+        self.assertIn("Python runtime", self.window.description.text())
+        self.assertFalse(self.window.launch.isEnabled())
+        self.assertTrue(self.window.repair.isEnabled())
+        self.controller.health_issues = []
+        self.window.select_game(self.window.library.currentItem())
+        self.wait_idle()
+        self.assertTrue(self.window.launch.isEnabled())
+        self.assertIn("Files verified", self.window.status.text())
+
+    def test_damaged_managed_binaries_prevent_launch_until_repaired(self):
+        self.controller.installed = True
+        for field in ("missing", "modified"):
+            with self.subTest(field=field):
+                setattr(self.controller, field, ["amdhip64.dll"])
+                self.window.select_game(self.window.library.currentItem())
+                self.wait_idle()
+                self.assertEqual(self.window.status.text(), "Repair recommended")
+                self.assertFalse(self.window.launch.isEnabled())
+                self.assertTrue(self.window.repair.isEnabled())
+                setattr(self.controller, field, [])
+
+    def test_failed_operation_refreshes_installation_health(self):
+        def failed_install(action, game):
+            self.controller.installed = True
+            self.controller.conflicts = ["An original backup needs attention after recovery."]
+            raise RuntimeError("Fixture operation failed")
+
+        with patch.object(self.controller, "operate", side_effect=failed_install), \
+                patch("native_launcher.app.steam.steam_is_running", return_value=False), \
+                patch.object(QMessageBox, "warning") as notice:
+            self.window.operate("install")
+            self.wait_idle()
+        notice.assert_called_once()
+        self.assertIn("original backup", self.window.description.text())
+        self.assertFalse(self.window.launch.isEnabled())
+
+    def test_resizing_preserves_button_sizes_and_scrolls_all_actions(self):
+        self.window.title.setText("A long game title with a complete edition and an expansion")
+        self.window.path.setText("/mnt/game-library/" + "long-folder-name/" * 14 + "Binaries/Win64")
+        for width, height in ((800, 600), (1100, 720), (1920, 1080), (800, 600)):
+            with self.subTest(size=(width, height)):
+                self.window.resize(width, height)
+                self.app.processEvents()
+                self.assertEqual((self.window.width(), self.window.height()), (width, height))
+                for button in self.window.findChildren(QPushButton):
+                    self.assertEqual(button.height(), BUTTON_HEIGHT)
+                self.assertEqual(self.window.library.visualItemRect(self.window.library.item(0)).height(), ROW_HEIGHT)
+                self.assertGreaterEqual(self.window.split.handleWidth(), 8)
+                viewport = self.window.detail_scroll.viewport()
+                self.assertLessEqual(self.window.detail_content.width(), viewport.width())
+                for text in (self.window.title, self.window.description, self.window.path):
+                    self.assertGreaterEqual(text.height(), text.heightForWidth(text.width()))
+                if width == 800:
+                    self.assertGreater(self.window.detail_scroll.verticalScrollBar().maximum(), 0)
+                self.window.detail_scroll.ensureWidgetVisible(self.window.uninstall, 0, 0)
+                self.app.processEvents()
+                position = self.window.uninstall.mapTo(viewport, QPoint(0, 0))
+                self.assertGreaterEqual(position.y(), 0)
+                self.assertLessEqual(position.y() + self.window.uninstall.height(), viewport.height())
+        self.window.toggle_log()
+        self.app.processEvents()
+        self.assertEqual(self.window.height(), 600)
+        self.assertEqual(self.window.uninstall.height(), BUTTON_HEIGHT)
+
+    def settings_dialog(self):
+        dialog = SettingsDialog(self.window)
+        dialog.show()
+        self.addCleanup(dialog.deleteLater)
+        self.addCleanup(dialog.close)
+        return dialog
+
+    def wait_settings(self, dialog):
+        deadline = time.monotonic() + 10
+        while dialog.worker is not None and time.monotonic() < deadline:
+            self.app.processEvents()
+            QTest.qWait(10)
+        self.assertIsNone(dialog.worker, "Settings worker did not settle")
+        self.app.processEvents()
+
+    def test_settings_update_check_and_compiler_controls(self):
+        self.controller.latest_release = {"version": "9.0.0"}
+        dialog = self.settings_dialog()
+        dialog.resize(540, 420)
+        dialog.check_updates()
+        self.assertFalse(dialog.close_button.isEnabled())
+        self.assertFalse(dialog.compiler_button.isEnabled())
+        dialog.reject()
+        self.assertTrue(dialog.isVisible())
+        self.wait_settings(dialog)
+        self.assertIn("9.0.0", dialog.update_status.text())
+        self.assertTrue(dialog.release_button.isVisible())
+        self.assertTrue(dialog.close_button.isEnabled())
+        with patch("native_launcher.app.QFileDialog.getOpenFileName", return_value=("/fixture/d3dcompiler_47.dll", "")):
+            dialog.choose_compiler()
+        self.assertEqual(self.controller.settings["compiler"], "/fixture/d3dcompiler_47.dll")
+        self.assertIn("/fixture/", dialog.compiler_label.text())
+        dialog.automatic_compiler()
+        self.assertIsNone(self.controller.settings["compiler"])
+        for button in dialog.findChildren(QPushButton):
+            self.assertEqual(button.height(), BUTTON_HEIGHT)
+        self.assertGreater(dialog.scroll.verticalScrollBar().maximum(), 0)
+        self.assertLessEqual(dialog.scroll.widget().width(), dialog.scroll.viewport().width())
+
+    def test_settings_failed_update_is_readable_and_can_retry(self):
+        dialog = self.settings_dialog()
+        with patch.object(self.controller, "check_updates", side_effect=RuntimeError("Network unavailable")):
+            dialog.check_updates()
+            self.wait_settings(dialog)
+        self.assertIn("Network unavailable", dialog.update_status.text())
+        self.assertTrue(dialog.check_button.isEnabled())
+        self.assertFalse(dialog.release_button.isVisible())
+        dialog.check_updates()
+        self.wait_settings(dialog)
+        self.assertIn("latest published", dialog.update_status.text())
 
 
 if __name__ == "__main__":

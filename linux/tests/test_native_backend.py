@@ -112,6 +112,77 @@ class BackendTests(unittest.TestCase):
         self.assertEqual((self.game / "winmm.dll").read_bytes(), b"A winmm.dll")
         self.assertEqual((self.game / "OptiScaler.ini").read_bytes(), b"keep user settings")
 
+    def test_file_health_does_not_claim_runtime_and_checks_wrapper_permissions(self):
+        result = self.backend.install(self.game, self.a)
+        self.assertEqual(result["installation_health"], "healthy")
+        self.assertEqual(result["runtime_status"], "unverified")
+        self.assertEqual(result["health_issues"], [])
+        wrapper = self.game / "amdnr-linux/run.sh"
+        wrapper.chmod(0o644)
+        result = self.backend.inspect(self.game)
+        self.assertEqual(result["status"], "needs_repair")
+        self.assertEqual(result["modified"], [])  # permissions are not content hashes
+        self.assertIn("not executable", result["health_issues"][0])
+        self.backend.repair(self.game, self.a)
+        self.assertEqual(self.backend.inspect(self.game)["installation_health"], "healthy")
+
+    def test_durable_python_missing_invalid_and_non_executable_are_reported(self):
+        runtime = self.root / "durable Python"
+        runtime.write_bytes(b"fixture only; never execute")
+        runtime.chmod(0o755)
+        (self.a / "amdnr-linux/python-runtime.path").write_text(str(runtime) + "\n")
+        self.backend.install(self.game, self.a)
+        self.assertEqual(self.backend.inspect(self.game)["health_issues"], [])
+        runtime.chmod(0o644)
+        self.assertIn("cannot run", self.backend.inspect(self.game)["health_issues"][0])
+        runtime.unlink()
+        result = self.backend.inspect(self.game)
+        self.assertEqual(result["status"], "needs_repair")
+        self.assertIn("missing", result["health_issues"][0])
+        pointer = self.game / "amdnr-linux/python-runtime.path"
+        for value in ("relative/python\n", "/valid/path\n/unexpected/line\n", "x" * 4097):
+            pointer.write_text(value)
+            self.assertTrue(any("path is invalid" in issue for issue in self.backend.inspect(self.game)["health_issues"]))
+
+    def test_inspection_checks_missing_and_changed_owned_prefix_files(self):
+        self.backend.install(self.game, self.a)
+        _, compiler = self.prefix()
+        compiler.unlink()
+        result = self.backend.inspect(self.game)
+        self.assertEqual(result["status"], "needs_repair")
+        self.assertTrue(any(str(compiler) in issue for issue in result["health_issues"]))
+        self.backend.repair(self.game, self.a)
+        self.assertEqual(self.backend.inspect(self.game)["installation_health"], "healthy")
+        compiler.write_bytes(b"another installation's compiler")
+        result = self.backend.inspect(self.game)
+        self.assertEqual(result["status"], "conflict")
+        self.assertTrue(any("modified outside" in issue for issue in result["conflicts"]))
+
+    def test_startup_diagnostics_are_bounded_historical_and_do_not_follow_links(self):
+        self.backend.install(self.game, self.a)
+        empty = self.backend.diagnostics(self.game)
+        self.assertEqual(empty["startup_evidence"], [])
+        self.assertIn("No supported startup logs", empty["startup_summary"])
+        private = self.root / "private.txt"
+        private.write_text("must never be included")
+        (self.game / "amd_bridge.log").symlink_to(private)
+        for index in range(12):
+            (self.game / f"OptiScaler.previous-{index}.Fixture.log").write_text("old successful frame\n" * 2000)
+        (self.game / "OptiScaler.log").write_text("prior session loaded and rendered\n")
+        os.utime(self.game / "OptiScaler.log", (1, 1))
+        os.mkfifo(self.game / "lmxxf_backend.log")
+        before = snapshot(self.game)
+        report = self.backend.diagnostics(self.game)
+        self.assertEqual(snapshot(self.game), before)
+        self.assertEqual(report["runtime_status"], "unverified")
+        self.assertIn("historical", report["startup_summary"])
+        self.assertLessEqual(len(report["startup_evidence"]), 8)
+        self.assertTrue(any(entry["truncated"] for entry in report["startup_evidence"]))
+        self.assertTrue(all(len(entry["tail"]) <= 16384 for entry in report["startup_evidence"]))
+        self.assertTrue(all("must never be included" not in entry["tail"] for entry in report["startup_evidence"]))
+        self.assertTrue(any("amd_bridge.log" in error for error in report["startup_errors"]))
+        self.assertFalse(any(entry["name"] == "lmxxf_backend.log" for entry in report["startup_evidence"]))
+
     def test_legacy_cli_install_is_adopted_without_changing_original_backups(self):
         self.backend.manage.install(self.a, self.game)
         original = (self.game / self.backend.manage.BACKUP / "winmm.dll").read_bytes()

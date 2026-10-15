@@ -28,6 +28,7 @@ class SteamGame:
     steam_root: Path
     library: Path
     exe_dir: Path | None = None
+    library_ambiguous: bool = False
 
 
 @dataclass(frozen=True)
@@ -219,17 +220,32 @@ def discover_games(roots: list[Path] | None = None) -> list[SteamGame]:
             continue
         seen_roots.add(root)
         libraries = {root}
+        ownership = None
         for file in (root / 'steamapps/libraryfolders.vdf', root / 'config/libraryfolders.vdf'):
             try:
                 section = _child(parse_vdf(_decode(_read(file))), 'libraryfolders')
+                if section is None:
+                    continue
+                indexed = {}
                 for entry in section.children if section else []:
                     if not entry.key.value.isdecimal():
                         continue
                     value = entry.value.value if entry.value else _value(entry.children, 'path')
                     if value and '\0' not in value and Path(value).is_absolute():
-                        libraries.add(Path(value).resolve())
+                        library = Path(value).resolve()
+                        libraries.add(library)
+                        apps = _child(entry.children, 'apps') if entry.children is not None else None
+                        for app in apps.children if apps else []:
+                            if re.fullmatch(r'[0-9]+', app.key.value):
+                                indexed.setdefault(app.key.value, set()).add(library)
+                if ownership is None:
+                    # steamapps/libraryfolders.vdf is current. An old config/
+                    # copy may reveal fallback libraries, but must not override
+                    # this file's ownership decisions (including an empty map).
+                    ownership = indexed
             except (OSError, ValueError):
                 continue
+        candidates = {}
         for library in sorted(libraries):
             for manifest in sorted((library / 'steamapps').glob('appmanifest_*.acf')):
                 try:
@@ -252,16 +268,23 @@ def discover_games(roots: list[Path] | None = None) -> list[SteamGame]:
                     install = install.resolve()
                     if (install / 'toolmanifest.vdf').is_file() or appid == '228980':
                         continue  # Proton, Steam Linux Runtime, and common redistributables.
-                    key = (root, appid)
-                    # Duplicate manifests across libraries are ambiguous; keep
-                    # one game entry but require an explicit directory choice.
-                    game = SteamGame(appid, name, install, root, library, resolve_exe_directory(install))
-                    if key in games and games[key].install_dir != install:
-                        old = games[key]
-                        game = SteamGame(old.appid, old.name, old.install_dir, old.steam_root, old.library, None)
-                    games[key] = game
+                    candidates.setdefault(appid, []).append(SteamGame(appid, name, install, root, library))
                 except (OSError, ValueError):
                     continue
+        for appid, copies in candidates.items():
+            owners = (ownership or {}).get(appid)
+            if owners:
+                copies = [game for game in copies if game.library in owners]
+                if not copies:
+                    # A stale manifest elsewhere does not override Steam's
+                    # explicit owner, even if that indexed install is missing.
+                    continue
+            copies.sort(key=lambda game: (str(game.library), str(game.install_dir)))
+            chosen = copies[0]
+            ambiguous = len(copies) > 1 or bool(owners and len(owners) > 1)
+            games[(root, appid)] = SteamGame(
+                chosen.appid, chosen.name, chosen.install_dir, chosen.steam_root,
+                chosen.library, None if ambiguous else resolve_exe_directory(chosen.install_dir), ambiguous)
     return sorted(games.values(), key=lambda game: (game.name.casefold(), game.appid, str(game.steam_root)))
 
 
@@ -485,10 +508,13 @@ def _wrapper_path(wrapper, game=None):
     if not wrapper.is_absolute() or any(char in str(wrapper) for char in '\0\n\r') or '%command%' in str(wrapper):
         raise ValueError('The wrapper must have an absolute, valid path')
     wrapper = wrapper.resolve()
-    if not wrapper.exists() and game is not None and game.exe_dir is not None:
+    if game is not None and game.exe_dir is not None:
         planned = Path(game.exe_dir).resolve() / 'amdnr-linux/run.sh'
-        if wrapper == planned:
-            return str(wrapper)  # Valid only inside the install transaction.
+        if wrapper == planned and (not wrapper.exists() or wrapper.is_file()):
+            # The backend installs a missing wrapper and repairs its execute
+            # permission. Do not block that repair before the backend runs.
+            # Standalone configure_launch still requires a runnable wrapper.
+            return str(wrapper)
     if not wrapper.is_file() or not os.access(wrapper, os.X_OK):
         raise ValueError('The game wrapper is missing or not executable')
     return str(wrapper)

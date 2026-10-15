@@ -1,6 +1,6 @@
 # NR Linux Manager — native Linux installation
 
-**Download [NR-Linux-Manager-v0.2.0-linux-x86_64.tar.gz](https://github.com/hassanm0301/AMD-NR---OptiScaler-rocm/releases/tag/linux-v0.2.0), extract it, and open `Start.sh`.**
+**Download [NR-Linux-Manager-v0.2.1-linux-x86_64.tar.gz](https://github.com/hassanm0301/AMD-NR---OptiScaler-rocm/releases/tag/linux-v0.2.1), extract it, and open `Start.sh`.**
 Python and the native Qt interface are included. No Proton setup is needed for
 the launcher itself, and no compiling or system ROCm installation is needed.
 If your file manager opens the script as text, choose “Run as program”, or open a
@@ -24,7 +24,8 @@ it does not include or port the restricted upstream Windows launcher.
    the Steam launch options. Existing MangoHud, GameMode and game arguments are
    preserved when they use a supported launch-option format.
 5. Click **Launch in Steam** and load your save. Your existing Proton choice,
-   prefix and saves are retained.
+   prefix and saves are retained. Enable DLSS, FSR or XeSS in the game’s
+   graphics settings. **Insert** opens OptiScaler; **Home** toggles neural rendering.
 
 The first install needs an internet connection and several gigabytes of free
 space. Later operations reuse verified downloads. If no native shader compiler
@@ -43,7 +44,8 @@ Steam only.
 
 ## Repair, update and uninstall
 
-Close the game and Steam before using these actions:
+Use **Settings → Check for updates** to check for a newer release.
+Close the game and Steam before using the selected game’s actions:
 
 - **Repair** restores missing or changed managed files. It preserves your current
   `OptiScaler.ini` and the original backups. Use a launcher matching an installed
@@ -77,8 +79,9 @@ The bridge still has limited game/hardware coverage; a native launcher does not
 change the neural renderer's hardware requirements.
 
 - **Tested GPU:** Radeon RX 9070 XT (RDNA 4).
-- **Tested rendering:** Stellar Blade with GE-Proton11-9, an existing save and
-  normal gameplay image. The Witcher 3 DX12 worked with an earlier bridge and
+- **Tested rendering:** Stellar Blade and Dragon’s Dogma 2 with GE-Proton11-9,
+  existing saves and normal gameplay images. Dragon’s Dogma 2 was tested with
+  FSR 3 Quality and its existing REFramework installation. The Witcher 3 DX12 worked with an earlier bridge and
   Proton-Wineland 11.0; it has not been retested with this exact package. These
   were short gameplay checks, not long-duration stability tests.
 - **Required game runtime:** Wine 11-based Proton. GE-Proton11-9 is the tested
@@ -115,15 +118,17 @@ and management, not a new neural model.
 | --- | --- |
 | Install asks to close Steam | Use Steam → Exit, then retry. Closing its window may leave it running. |
 | Game is missing | Rescan; confirm its Steam library is mounted. Or choose Add a game. |
+| Duplicate copies across library drives | The manager follows Steam’s current library index. If Steam reports multiple owners, resolve the duplicate in Steam and rescan before installing. |
 | Wrong or ambiguous executable folder | Use Choose game executable. Stellar Blade uses `SB/Binaries/Win64`; Witcher 3 DX12 uses `bin/x64_dx12`. |
 | Installation reports a conflict | Preserve the named file or settings; resolve the conflict before retrying. Conflicting DLL-injection mods may need their own uninstall process. |
 | Wrapper says its Python runtime is missing | Open the complete portable launcher and Repair the game. |
 | Saves seem missing | Launch through the original Steam entry and prefix. Do not directly run the `.exe`. |
 | Game crashes or no neural frames appear | Check Proton version, GPU access and compiler; compare with `[DlssNr] Enabled=false` in `OptiScaler.ini`. |
-| Need diagnostic files | Use Save logs. Review personal paths before sharing; nothing is sent automatically. |
+| No AMDNR message or Insert menu | Confirm the selected folder matches the copy Steam launches, then Repair. Existing REFramework may use the same Insert key; change its menu key to Delete if both overlays open. |
+| Need diagnostic files | Use Save logs. The export includes installation health, wrapper errors and available startup logs, even if the host never loaded. Review personal paths before sharing; nothing is sent automatically. |
 
-The [release page](https://github.com/hassanm0301/AMD-NR---OptiScaler-rocm/releases/tag/linux-v0.2.0)
-contains the native portable app, the smaller `AMDNR-Linux-v0.2.0.tar.gz` addon for
+The [release page](https://github.com/hassanm0301/AMD-NR---OptiScaler-rocm/releases/tag/linux-v0.2.1)
+contains the native portable app, the smaller `AMDNR-Linux-v0.2.1.tar.gz` addon for
 [advanced command-line use](INSTALL-CLI.md), corresponding vkd3d source, and
 `SHA256SUMS`. GitHub's automatic “Source code” archives do not include the prebuilt
 bridge binaries. Optional integrity check: `sha256sum --ignore-missing -c SHA256SUMS`.

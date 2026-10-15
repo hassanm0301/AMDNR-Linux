@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Launch a game with the private HIP bridge and ROCm libraries."""
 from pathlib import Path
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -8,6 +9,20 @@ import shutil
 import sys
 import fcntl
 import tempfile
+
+def launch_status(bundle, message):
+    """Keep the last wrapper result when Steam hides its terminal output."""
+    try:
+        destination = bundle / "launch.log"
+        with tempfile.NamedTemporaryFile(mode="w", dir=bundle, delete=False, encoding="utf-8") as output:
+            pending = Path(output.name)
+            output.write(f"{datetime.now(timezone.utc).isoformat()}\n{message}\n")
+        try:
+            pending.replace(destination)
+        finally:
+            pending.unlink(missing_ok=True)
+    except OSError:
+        pass  # A diagnostic write must not prevent the game from launching.
 
 def sha(path):
     with path.open("rb") as source:
@@ -141,10 +156,14 @@ def main():
         raise ValueError("STEAM_COMPAT_DATA_PATH or WINEPREFIX must identify this game's prefix.")
     env = environment(bundle, os.environ)
     prepare_prefix(bundle, Path(prefix).resolve())
+    launch_status(bundle, f"Wrapper prepared. Handing control to the game runner.\n"
+                         f"Game directory: {bundle.parent}\nPrefix: {Path(prefix).resolve()}\n"
+                         "This confirms wrapper setup only; neural rendering is not yet verified.")
     os.execvpe(sys.argv[1], sys.argv[1:], env)
 
 if __name__ == "__main__":
     try:
         main()
     except (OSError, ValueError) as error:
+        launch_status(Path(__file__).resolve().parent, f"Launch setup failed: {error}")
         sys.exit(f"AMDNR Linux: {error}")

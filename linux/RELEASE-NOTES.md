@@ -1,59 +1,34 @@
-# Linux v0.2.0 — Native launcher
+# Linux v0.2.1 — Compact launcher and Steam library fix
 
-**Download `NR-Linux-Manager-v0.2.0-linux-x86_64.tar.gz`, extract it, and open `Start.sh`.**
+**Download `NR-Linux-Manager-v0.2.1-linux-x86_64.tar.gz`, extract it, and open `Start.sh`.** Python and Qt are included. Select a game, close the game and Steam, and choose **Install neural rendering**. Launch through Steam using your existing Proton version and saves. Enable DLSS, FSR or XeSS in the game; **Insert** opens OptiScaler and **Home** toggles neural rendering.
 
-NR Linux Manager runs natively on Linux and includes Python and Qt. Select a Steam
-game, close the game and Steam, and click **Install neural rendering**. The app
-finds a shader compiler, downloads verified runtime files, backs up affected files,
-and configures Steam's launch options. Then launch through Steam with your existing
-Proton version, prefix and saves.
+[Installation, update and removal guide](https://github.com/hassanm0301/AMD-NR---OptiScaler-rocm/blob/linux-v0.2.1/linux/INSTALL.md).
 
-- Steam library discovery across drives, search, and manual executable selection.
-- Install, Repair, Update, and Uninstall with original-file restoration.
-- Existing MangoHud/GameMode options and game arguments preserved where safely parseable.
-- Configuration preserved during repair/update; logs can be exported locally.
-- Recovery journals for interruptions, original prefix-file restoration, and
-  protection against silently overwriting later Steam settings or downgrading packages.
-- Portable shared Python runtime for installed games, independent of the extracted app folder.
+## What changed
 
-This is an independent community launcher with an original library/details interface.
-It uses no code or visual assets from the restricted upstream Windows launcher.
-AMDNR is by [3zwr1](https://github.com/3zwr1/AMD-NR---OptiScaler).
+- Removed the navigation sidebar and oversized library heading. Add game, Rescan library and Settings now share a compact toolbar.
+- Moved release checks into Settings. Game actions retain Install, Repair, Update and Uninstall.
+- Fixed resizing with evenly sized game rows, consistent button heights and spacing, and scrolling game details. Game folder and Save logs now have clear button borders.
+- Fixed stale selections after filtering, empty-library states and installation-state refresh after an error.
+- Fixed duplicate Steam game detection: the launcher now follows Steam’s active library index instead of selecting an older copy on another drive.
+- Improved Repair for missing runtime files and lost launch-script permissions. Installation status describes file health without claiming a running neural session.
+- Added wrapper startup diagnostics and a more complete log export, including when the host never loads. Saving over an earlier export now works without risking that export if collection fails.
 
-## Installation and compatibility
+## Dragon’s Dogma 2
 
-[Read the installation guide](https://github.com/hassanm0301/AMD-NR---OptiScaler-rocm/blob/linux-v0.2.0/linux/INSTALL.md).
+The reported missing AMDNR overlay was caused by patching an older game copy while Steam launched another drive’s copy. After restoring the misplaced installation and patching Steam’s active copy, neural rendering ran on **RX 9070 XT / GE-Proton11-9**, with FSR 3 Quality and the existing REFramework installation. The player confirmed normal-looking gameplay using the existing save; live model and fresh-composition counters confirmed neural processing.
 
-The rendering binaries are unchanged from the game-tested Linux v0.1.0 release:
-RX 9070 XT, Stellar Blade, GE-Proton11-9, existing save and normal gameplay image,
-with 3,599 model frames / 3,594 fresh neural outputs. The Witcher 3 DX12 passed an
-earlier bridge build; it has not been retested with this exact package.
+If v0.2.0 already patched a stale copy, use that launcher’s **Uninstall and restore originals** on its old entry before installing into the active copy with v0.2.1. This restores the old wrapper and any prefix files it owns. Keep its backup and ownership records until removal completes.
 
-Game compatibility remains experimental. Other GPUs, Steam Deck, Flatpak Steam,
-other distributions and long-duration stability are not validated. The bridge
-requires Wine 11-based Proton and usable AMD GPU compute devices. The native app
-requires x86_64 Linux, glibc 2.34+, and normal X11/Wayland desktop libraries.
+## Validation and downloads
 
-The launcher automatically looks for a native x64 `d3dcompiler_47.dll` in installed
-games. If none is found, select one from a game you own. AMDNR 0.3.5.5R4 and ROCm
-7.2.4 are downloaded directly from their publishers with pinned checksums. No
-system ROCm installation, compiling, binutils, or administrator access is needed.
+**146 automated tests pass** under both system Python 3.14 and bundled Python 3.12, including GUI resizing from 800×600 through 1920×1080, Steam duplicate-library selection, install/repair/update/uninstall, and interrupted-operation recovery. A real isolated runtime repair test removed a standard-library module and verified that repair restored a working runtime.
 
-**Testing:** automated fixture coverage exercises discovery, file and Steam
-transactions, hard-interruption recovery, update protection and GUI actions.
-The portable app has been rendered under X11, Wayland and offscreen. A real-asset
-installation/repair/update/removal test uses an isolated game/prefix and verifies
-original files and saves are restored. No new gameplay compatibility is claimed.
+Rendering binaries and the pinned AMDNR 0.3.5.5R4 / ROCm 7.2.4 dependencies are unchanged. Stellar Blade remains validated with this bridge; The Witcher 3 DX12 passed an earlier bridge build. Game and GPU coverage remains limited to short tests; see the guide for requirements and limitations.
 
-## Assets
+- **NR-Linux-Manager-v0.2.1-linux-x86_64.tar.gz** — recommended native portable app, editable launcher source and Python/Qt runtime with notices and corresponding Qt/PySide source.
+- **AMDNR-Linux-v0.2.1.tar.gz** — smaller addon for advanced command-line installation.
+- **AMDNR-Linux-v0.2.1-vkd3d-source.tar.gz** — corresponding patched graphics source.
+- **INSTALL.md** and **SHA256SUMS** — instructions and asset checksums.
 
-- **NR-Linux-Manager-v0.2.0-linux-x86_64.tar.gz** — recommended native portable app,
-  editable launcher source, Python/Qt runtime and matching Qt/PySide sources.
-- **AMDNR-Linux-v0.2.0.tar.gz** — smaller addon for advanced command-line installation.
-- **AMDNR-Linux-v0.2.0-vkd3d-source.tar.gz** — corresponding graphics source and pinned submodules.
-- **INSTALL.md** — installation, update, removal and troubleshooting guide.
-- **SHA256SUMS** — checksums for all release assets.
-
-Upstream model/runtime, Microsoft compiler, game files, saves, personal settings
-and logs are not redistributed. Included and downloaded components retain their
-respective licenses. See the runtime notices and `linux/RELEASE-LICENSES.md`.
+AMDNR is by [3zwr1](https://github.com/3zwr1/AMD-NR---OptiScaler). This independent Linux manager uses no upstream Windows launcher code or visual assets. Upstream model/runtime and ROCm are obtained directly from their publishers with pinned checksums; game files, saves, user logs and the Microsoft compiler are not redistributed.

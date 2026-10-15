@@ -133,14 +133,32 @@ def persistent_python(data_dir):
         raise ValueError("The launcher's bundled Python runtime is missing. Extract the complete download.")
     key = file_hash(executable)[:16]
     target = data_dir / "runtime" / key
-    if not (target / "bin/python3.12").is_file():
+    installed = target / "bin/python3.12"
+    probe = ["-I", "-c", "import pathlib,datetime,hashlib,json,os,shutil,sys,fcntl,tempfile"]
+    healthy = (installed.is_file() and os.access(installed, os.X_OK)
+               and file_hash(installed) == file_hash(executable))
+    if healthy:
+        try:
+            healthy = subprocess.run([str(installed), *probe], stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL, timeout=15).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            healthy = False
+    if not healthy:
         target.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=target.parent) as temporary:
             copied = Path(temporary) / "python"
             shutil.copytree(source, copied, symlinks=True,
                             ignore=shutil.ignore_patterns("site-packages", "__pycache__"))
-            subprocess.run([str(copied / "bin/python3.12"), "-I", "-c", "import pathlib,hashlib,fcntl,json"], check=True)
-            copied.rename(target)
+            subprocess.run([str(copied / "bin/python3.12"), *probe], check=True, timeout=15)
+            previous = Path(temporary) / "previous"
+            if target.exists() or target.is_symlink():
+                target.rename(previous)
+            try:
+                copied.rename(target)
+            except BaseException:
+                if previous.exists() or previous.is_symlink():
+                    previous.rename(target)
+                raise
     return target / "bin/python3.12"
 
 
@@ -173,7 +191,7 @@ class Controller:
         self.games = steam.discover_games(self.steam_roots)
         for index, game in enumerate(self.games):
             selected = self.settings.get("executables", {}).get(self.game_key(game))
-            if selected:
+            if selected and not getattr(game, "library_ambiguous", False):
                 executable = Path(selected)
                 if executable.is_file() and executable.resolve().is_relative_to(game.install_dir.resolve()):
                     self.games[index] = replace(game, exe_dir=executable.resolve().parent)
@@ -189,6 +207,8 @@ class Controller:
         return hashlib.sha256((str(game.steam_root) + "\0" + game.appid + "\0" + str(game.install_dir)).encode()).hexdigest()
 
     def set_executable(self, game, executable):
+        if getattr(game, "library_ambiguous", False):
+            raise ValueError("Steam lists this game in more than one library. Resolve the duplicate in Steam, then rescan.")
         if self.pending_operation(game) or (game.exe_dir and self.backend.inspect(game.exe_dir).get("recovery_needed")):
             raise ValueError("Recover the interrupted installation before changing its executable directory.")
         executable = Path(executable).resolve()
@@ -292,6 +312,8 @@ class Controller:
     def _operate(self, action, game):
         if action not in {"install", "repair", "update", "uninstall"}:
             raise ValueError("Unknown installation action.")
+        if getattr(game, "library_ambiguous", False):
+            raise ValueError("Steam lists this game in more than one library. Resolve the duplicate in Steam, then rescan.")
         if game.exe_dir is None:
             raise ValueError("Select the actual game executable before installing.")
         if game.appid and steam.steam_is_running():
@@ -325,7 +347,7 @@ class Controller:
         if not game.appid:
             return {"message": 'Installed. Add the launch option shown below to your game runner.',
                     "launch_options": shlex.quote(str(directory / "amdnr-linux/run.sh")) + " %command%"}
-        return {"message": "Ready. Open Steam and launch your game normally."}
+        return {"message": "Installed. Open Steam and launch your game normally. Enable DLSS, FSR or XeSS in the game; Insert opens OptiScaler and Home toggles neural rendering."}
 
     def check_updates(self):
         self.new_release = available_release()
@@ -335,10 +357,26 @@ class Controller:
         import zipfile
         if game.exe_dir is None:
             raise ValueError("Choose the game's executable first.")
-        with zipfile.ZipFile(destination, "x", compression=zipfile.ZIP_DEFLATED) as output:
-            for name in ("OptiScaler.log", "lmxxf_backend.log", "amd_bridge.log"):
-                path = game.exe_dir / name
-                if path.is_file() and not path.is_symlink() and path.stat().st_size < 50 * 1024**2:
-                    output.write(path, name)
-            output.writestr("launcher.txt", f"NR Linux Manager {VERSION}\nGame: {game.name}\nApp ID: {game.appid or 'manual'}\n")
+        destination = Path(destination)
+        diagnostics = self.backend.diagnostics(game.exe_dir)
+        # The save dialog already confirms replacement. Build the complete ZIP
+        # beside its destination, then replace atomically so failure never
+        # destroys an earlier log export or follows a destination symlink.
+        with tempfile.NamedTemporaryFile(dir=destination.parent, prefix=".nr-logs-", delete=False) as stream:
+            temporary = Path(stream.name)
+        try:
+            with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as output:
+                for name in ("OptiScaler.log", "lmxxf_backend.log", "amd_bridge.log",
+                             "amdnr-linux/launch.log", "OptiScaler.ini"):
+                    path = game.exe_dir / name
+                    if (path.is_file() and not path.is_symlink()
+                            and not any(p.is_symlink() for p in path.parents)
+                            and path.stat().st_size < 50 * 1024**2):
+                        output.write(path, name)
+                output.writestr("diagnostics.json", json.dumps(diagnostics, indent=2, default=str) + "\n")
+                output.writestr("launcher.txt", f"NR Linux Manager {VERSION}\nGame: {game.name}\nApp ID: {game.appid or 'manual'}\n"
+                                + diagnostics.get("startup_summary", "Runtime activation has not been verified.") + "\n")
+            temporary.replace(destination)
+        finally:
+            temporary.unlink(missing_ok=True)
         return destination

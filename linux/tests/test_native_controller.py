@@ -6,6 +6,8 @@ import shutil
 import sys
 import tempfile
 import unittest
+import zipfile
+from dataclasses import replace
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -186,6 +188,78 @@ class ControllerTests(unittest.TestCase):
                 self.app.operate("repair", self.game)
         prepare.assert_not_called()
         self.assertEqual(self.config.read_bytes(), self.config_before)
+
+    def test_ambiguous_library_does_not_use_cached_executable_or_install(self):
+        game = replace(self.game, library_ambiguous=True, exe_dir=None)
+        exe = self.game_dir / "game.exe"
+        exe.write_bytes(b"existing executable")
+        self.app.settings["executables"] = {self.app.game_key(game): str(exe)}
+        with patch.object(steam, "discover_games", return_value=[game]):
+            self.assertIsNone(self.app.discover()[0].exe_dir)
+        with self.assertRaisesRegex(ValueError, "more than one library"):
+            self.app.set_executable(game, exe)
+        with patch.object(self.app, "prepare") as prepare:
+            with self.assertRaisesRegex(ValueError, "more than one library"):
+                self.app.operate("install", game)
+        prepare.assert_not_called()
+        self.assertEqual(self.config.read_bytes(), self.config_before)
+
+    def test_controller_repairs_nonexecutable_wrapper_before_launching(self):
+        self.app.operate("install", self.game)
+        wrapper = self.game_dir / "amdnr-linux/run.sh"
+        configured = self.config.read_bytes()
+        wrapper.chmod(0o644)
+        self.assertEqual(self.app.backend.inspect(self.game_dir)["status"], "needs_repair")
+        with self.assertRaisesRegex(ValueError, "not executable"):
+            steam.configure_launch(self.game, wrapper, self.app.data_dir)
+        self.app.operate("repair", self.game)
+        self.assertTrue(os.access(wrapper, os.X_OK))
+        self.assertEqual(self.app.backend.inspect(self.game_dir)["installation_health"], "healthy")
+        self.assertEqual(self.config.read_bytes(), configured)
+        self.assertFalse(self.app.pending_operation(self.game))
+
+    def test_log_export_has_diagnostics_without_host_logs_and_can_replace(self):
+        destination = self.root / "logs.zip"
+        destination.write_bytes(b"old export")
+        self.app.collect_logs(self.game, destination)
+        with zipfile.ZipFile(destination) as output:
+            self.assertIn("diagnostics.json", output.namelist())
+            details = json.loads(output.read("diagnostics.json"))
+            self.assertEqual(details["runtime_status"], "unverified")
+            self.assertIn("startup_summary", details)
+        with patch.object(controller.json, "dumps", side_effect=ValueError("export failure")):
+            before = destination.read_bytes()
+            with self.assertRaises(ValueError):
+                self.app.collect_logs(self.game, destination)
+            self.assertEqual(destination.read_bytes(), before)
+
+    def test_log_export_never_follows_log_symlinks(self):
+        private = self.root / "private.txt"
+        private.write_text("unrelated private data")
+        (self.game_dir / "OptiScaler.log").symlink_to(private)
+        destination = self.root / "logs.zip"
+        self.app.collect_logs(self.game, destination)
+        with zipfile.ZipFile(destination) as output:
+            self.assertNotIn("OptiScaler.log", output.namelist())
+            self.assertNotIn(b"unrelated private data", output.read("diagnostics.json"))
+
+
+class PersistentRuntimeTests(unittest.TestCase):
+    def test_repair_replaces_partial_and_nonexecutable_runtime(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            portable = root / "portable"
+            executable = portable / "runtime/python/bin/python3.12"
+            executable.parent.mkdir(parents=True)
+            executable.write_text("#!/bin/sh\nexit 0\n")
+            executable.chmod(0o755)
+            with patch.dict(os.environ, {"NRL_PORTABLE_ROOT": str(portable)}):
+                target = controller.persistent_python(root / "data")
+                for damage in (lambda: target.unlink(), lambda: target.chmod(0o644)):
+                    damage()
+                    self.assertEqual(controller.persistent_python(root / "data"), target)
+                    self.assertTrue(os.access(target, os.X_OK))
+                    self.assertEqual(target.read_bytes(), executable.read_bytes())
 
 
 if __name__ == "__main__":

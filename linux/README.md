@@ -7,7 +7,7 @@ It reaches native Linux ROCm through a separate `amdhip64_7.so` and Wine's Unix-
 dispatcher. The model and neural runtime are unmodified.
 
 **Installing a prebuilt release? Start with [INSTALL.md](INSTALL.md).** The
-[Linux v0.2.0 release](https://github.com/hassanm0301/AMD-NR---OptiScaler-rocm/releases/tag/linux-v0.2.0)
+[Linux v0.2.1 release](https://github.com/hassanm0301/AMD-NR---OptiScaler-rocm/releases/tag/linux-v0.2.1)
 includes a portable native Qt launcher, the tested bridge and patched graphics
 binaries. The launcher discovers Steam libraries, finds a native shader compiler,
 and handles downloads, install, repair, update, uninstall and Steam settings.
@@ -21,8 +21,14 @@ with GE-Proton11-9. The player confirmed normal-looking gameplay, and fresh mode
 and composition counters confirm inference was applied. The Witcher 3 DX12 also
 passed an earlier gameplay check with Proton-Wineland 11.0 (2026-09-30).
 These are short gameplay checks, not long-duration stability claims. The current
-PE/Unixlib bridge is game-validated in Stellar Blade; The Witcher 3's gameplay
+PE/Unixlib bridge is game-validated in Stellar Blade and Dragon’s Dogma 2; The Witcher 3's gameplay
 check used the preceding bridge build.
+The native launcher follows Steam’s current library index when duplicate game
+copies exist. Dragon’s Dogma 2’s initial missing overlay was caused by patching
+a stale copy; installing beside Steam’s active executable resolved it. Its
+FSR 3 Quality run produced live neural model/composition frames, and the player
+confirmed normal-looking gameplay with the existing REFramework installation.
+
 The source snapshot in
 `main/AMDNR-source` is 0.3.4.2; the package uses separately downloaded release
 binaries, not a rebuilt host.

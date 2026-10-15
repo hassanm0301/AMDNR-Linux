@@ -87,6 +87,18 @@ class SteamTests(unittest.TestCase):
                         + steam._quote(name) + ' "installdir" ' + steam._quote(folder) + ' }')
         return path
 
+    def library_index(self, entries, root=None, location='steamapps/libraryfolders.vdf'):
+        path = (root or self.steam) / location
+        path.parent.mkdir(parents=True, exist_ok=True)
+        values = []
+        for index, (library, apps) in enumerate(entries):
+            body = '"path" ' + steam._quote(str(library))
+            if apps is not None:
+                body += ' "apps" { ' + ' '.join(steam._quote(appid) + ' "100"' for appid in apps) + ' }'
+            values.append(steam._quote(str(index)) + ' { ' + body + ' }')
+        path.write_text('"libraryfolders" { ' + ' '.join(values) + ' }')
+        return path
+
     def test_vdf_multiline_comments_case_escapes_and_quoted_braces(self):
         text = '\ufeff/* header */ "ROOT" { // comment\n "Brace" "}" "path" "a\\\\b\\\"c\\nnext"\n bare "{" }'
         root = steam._child(steam.parse_vdf(text), 'root')
@@ -136,6 +148,106 @@ class SteamTests(unittest.TestCase):
         self.manifest(self.steam, appid='228980', folder='Steamworks Shared', name='Redistributables')
         (self.steam / 'steamapps/common/Steamworks Shared').mkdir()
         self.assertEqual(steam.discover_games([self.steam]), [])
+
+    def test_duplicate_manifest_uses_indexed_owner_even_when_stale_sorts_first(self):
+        stale = self.root / 'aaa stale library'
+        self.manifest(stale, name='Stale Test Game')
+        executable(stale / 'steamapps/common/Test Game/Old.exe')
+        self.manifest()
+        executable(self.install / 'Binaries/Win64/Game.exe')
+        self.library_index([(stale, []), (self.library, ['123'])])
+        games = steam.discover_games([self.steam])
+        self.assertEqual(len(games), 1)
+        self.assertEqual(games[0].library, self.library)
+        self.assertEqual(games[0].install_dir, self.install)
+        self.assertEqual(games[0].name, 'Test Game')
+        self.assertEqual(games[0].exe_dir, self.install / 'Binaries/Win64')
+        self.assertFalse(games[0].library_ambiguous)
+
+    def test_current_library_index_wins_over_stale_config_copy(self):
+        stale = self.root / 'old library'
+        self.manifest(stale)
+        executable(stale / 'steamapps/common/Test Game/Old.exe')
+        self.manifest()
+        executable(self.install / 'Game.exe')
+        self.library_index([(self.library, ['123'])])
+        self.library_index([(stale, ['123'])], location='config/libraryfolders.vdf')
+        games = steam.discover_games([self.steam])
+        self.assertEqual([game.library for game in games], [self.library])
+        self.assertFalse(games[0].library_ambiguous)
+
+    def test_config_library_index_is_used_when_current_file_is_absent(self):
+        stale = self.root / 'aaa stale library'
+        self.manifest(stale)
+        executable(stale / 'steamapps/common/Test Game/Old.exe')
+        self.manifest()
+        executable(self.install / 'Game.exe')
+        self.library_index([(stale, []), (self.library, ['123'])], location='config/libraryfolders.vdf')
+        games = steam.discover_games([self.steam])
+        self.assertEqual([game.library for game in games], [self.library])
+
+    def test_unindexed_duplicate_manifests_remain_ambiguous_and_deterministic(self):
+        other = self.root / 'another library'
+        self.manifest(other)
+        executable(other / 'steamapps/common/Test Game/Other.exe')
+        self.manifest()
+        executable(self.install / 'Game.exe')
+        for apps in (None, []):
+            with self.subTest(apps=apps):
+                self.library_index([(other, apps), (self.library, apps)])
+                first = steam.discover_games([self.steam])[0]
+                self.library_index([(self.library, apps), (other, apps)])
+                second = steam.discover_games([self.steam])[0]
+                self.assertEqual(first, second)
+                self.assertTrue(first.library_ambiguous)
+                self.assertIsNone(first.exe_dir)
+
+    def test_conflicting_explicit_owners_are_not_arbitrarily_selected(self):
+        other = self.root / 'other library'
+        self.manifest(other)
+        executable(other / 'steamapps/common/Test Game/Other.exe')
+        self.manifest()
+        executable(self.install / 'Game.exe')
+        self.library_index([(other, ['123']), (self.library, ['123'])])
+        game = steam.discover_games([self.steam])[0]
+        self.assertTrue(game.library_ambiguous)
+        self.assertIsNone(game.exe_dir)
+
+    def test_missing_indexed_owner_does_not_activate_a_stale_manifest(self):
+        missing = self.root / 'missing active library'
+        self.manifest()
+        executable(self.install / 'Game.exe')
+        self.library_index([(self.library, []), (missing, ['123'])])
+        self.assertEqual(steam.discover_games([self.steam]), [])
+
+    def test_library_ownership_is_independent_across_steam_roots(self):
+        second_root = self.root / 'Flatpak Steam'
+        second_library = self.root / 'Flatpak library'
+        self.manifest()
+        executable(self.install / 'Game.exe')
+        self.manifest(second_library)
+        other_install = second_library / 'steamapps/common/Test Game'
+        executable(other_install / 'Game.exe')
+        self.library_index([(self.library, ['123']), (second_library, [])])
+        self.library_index([(self.library, []), (second_library, ['123'])], root=second_root)
+        games = steam.discover_games([self.steam, second_root])
+        self.assertEqual(len(games), 2)
+        self.assertEqual({game.steam_root: game.library for game in games},
+                         {self.steam: self.library, second_root: second_library})
+        self.assertTrue(all(not game.library_ambiguous for game in games))
+        self.assertEqual(games, steam.discover_games([second_root, self.steam]))
+
+    def test_empty_current_index_does_not_inherit_obsolete_ownership(self):
+        other = self.root / 'other library'
+        self.manifest(other)
+        executable(other / 'steamapps/common/Test Game/Other.exe')
+        self.manifest()
+        executable(self.install / 'Game.exe')
+        self.library_index([(other, []), (self.library, [])])
+        self.library_index([(other, ['123'])], location='config/libraryfolders.vdf')
+        game = steam.discover_games([self.steam])[0]
+        self.assertTrue(game.library_ambiguous)
+        self.assertIsNone(game.exe_dir)
 
     def test_directory_resolution_prefers_dx12_then_win64_and_refuses_ambiguity(self):
         executable(self.install / 'bin/x64/game.exe')
