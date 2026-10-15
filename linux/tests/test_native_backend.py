@@ -42,7 +42,13 @@ class BackendTests(unittest.TestCase):
         (self.game / "save.dat").write_bytes(b"save game")
         self.initial = snapshot(self.game)
         self.messages = []
-        self.backend = LauncherBackend(ROOT.parent, self.root / "cache", self.root / "state", self.messages.append)
+        # Synthetic A/B packages exercise legacy metadata independently of the
+        # real release manifest beside an extracted launcher's test suite.
+        self.release = self.root / "backend release"
+        (self.release / "linux").mkdir(parents=True)
+        for name in ("launch.py", "manage.py", "setup.py"):
+            shutil.copy2(ROOT / name, self.release / "linux" / name)
+        self.backend = LauncherBackend(self.release, self.root / "cache", self.root / "state", self.messages.append)
         running = patch.object(self.backend, "_running", return_value=[])
         running.start()
         self.addCleanup(running.stop)
@@ -286,8 +292,8 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(other.setup.ROOT, release / "linux")
         self.assertEqual(other.manage.ROOT, release / "linux")
         self.assertIs(other.setup.manage, other.manage)
-        self.assertEqual(self.backend.setup.ROOT, ROOT)
-        self.assertEqual(self.backend.manage.ROOT, ROOT)
+        self.assertEqual(self.backend.setup.ROOT, self.release / "linux")
+        self.assertEqual(self.backend.manage.ROOT, self.release / "linux")
 
     def test_release_versions_reject_downgrade_and_repair_version_change(self):
         self.backend.addon_version = "0.2.0"
@@ -370,7 +376,7 @@ class BackendTests(unittest.TestCase):
                 self.backend.install(self.game, self.a)
 
     def test_progress_callback_failure_does_not_invalidate_commit(self):
-        other = LauncherBackend(ROOT.parent, self.root / "cache2", self.root / "state2",
+        other = LauncherBackend(self.release, self.root / "cache2", self.root / "state2",
                                 lambda text: (_ for _ in ()).throw(RuntimeError("UI closed")))
         with patch.object(other, "_running", return_value=[]):
             result = other.install(self.game, self.a)
