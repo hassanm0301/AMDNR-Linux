@@ -128,11 +128,11 @@ def main():
         metadata = {
             "release": f"linux-v{args.version}", "source_commit": commit,
             "bridge_format": "Wine PE builtin plus native Unixlib",
-            "upstream_amdnr": "0.3.5.5R4", "private_rocm": "7.2.4",
+            "upstream_amdnr": "0.3.5.6", "private_rocm": "7.2.4",
             "vkd3d_proton_commit": VKD3D_REVISION,
             "tested_gpu": "Radeon RX 9070 XT (gfx1201)",
             "tested_game": "Stellar Blade", "tested_proton": "GE-Proton11-9",
-            "validation": "Short gameplay with normal image, 3599 model frames and 3594 fresh composed outputs; automated GPU and regression tests passed",
+            "validation": "Short gameplay on AMDNR 0.3.5.5R4 with normal image, 3599 model frames and 3594 fresh composed outputs; automated GPU and regression tests passed",
             "excluded": ["upstream host/runtime/model", "Microsoft shader compiler", "ROCm binaries", "game files", "prefixes and user logs"],
             "binaries": {line.split("  ")[1]: line.split("  ")[0] for line in sums},
         }

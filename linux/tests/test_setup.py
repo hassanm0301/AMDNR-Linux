@@ -55,6 +55,16 @@ class SetupTests(unittest.TestCase):
             replacement.start()
             self.addCleanup(replacement.stop)
 
+    def test_pinned_upstream_release(self):
+        self.assertEqual(setup.RELEASE_VERSION, "0.3.5.6")
+        self.assertEqual(setup.RELEASE_SHA256, "e7ffc09696f1a4e06d26dc0c228d15a9c74a0e56e3d24be6a130a0f5e49968d8")
+        self.assertEqual(setup.RELEASE_URL, "https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/"
+                                            "Alpha0.3.5.6/AMDNR-v0.3.5.6.zip")
+        # Earlier pinned archives stay accepted for manual staging.
+        self.assertEqual(setup.manage.RELEASES["725cef9da0608621fe3233a7127e6511b9543061fcecaba8348b2c55c608d448"],
+                         "0.3.5.5R4")
+        self.assertEqual(len(set(setup.manage.RELEASES.values())), len(setup.manage.RELEASES))
+
     def test_complete_binary_manifest(self):
         setup.verify_binaries()
 

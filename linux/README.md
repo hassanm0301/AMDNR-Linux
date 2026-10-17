@@ -52,8 +52,10 @@ binaries, not a rebuilt host.
 The private runtime download contains the required ROCm libraries, approximately
 186 MiB extracted. It does not install packages, run package scripts, change the
 system driver, or require root. ROCm headers/compiler are build dependencies only.
-The danielblnc runtime, AMDNR Anywhere, frame generation, and Ray Regeneration
-are outside this bridge's current validation coverage.
+The danielblnc runtime, AMDNR Anywhere, frame generation, Ray Regeneration, and
+the Model E (HelixSR) and Model L (d4r) upscalers added in 0.3.5.6 are outside
+this bridge's current validation coverage. The Linux tools do not fetch Model E
+or Model L; Model L also brings its own Windows HIP runtime.
 
 ## Build and stage
 
@@ -64,7 +66,7 @@ Run from the repository root:
 ./linux/build-vkd3d.sh
 ./linux/fetch-rocm.py linux/build/rocm
 ./linux/manage.py stage \
-  --archive /path/to/AMDNR-v0.3.5.5R4.zip \
+  --archive /path/to/AMDNR-v0.3.5.6.zip \
   --compiler /path/to/your/game/d3dcompiler_47.dll \
   --rocm linux/build/rocm \
   --output linux/build/package
@@ -76,6 +78,12 @@ The stage command accepts these checksum-pinned upstream archives:
 | --- | --- |
 | [0.3.4.2](https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha0.3.4.2/AMDNR-v0.3.4.2.zip) | `013081a3a225ef927d96d8996b64910d62f796022b20bef6a6ea102670b0cb63` |
 | [0.3.5.5R4](https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha0.3.5.5R4/AMDNR-v0.3.5.5R4.zip) | `725cef9da0608621fe3233a7127e6511b9543061fcecaba8348b2c55c608d448` |
+| [0.3.5.6](https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha0.3.5.6/AMDNR-v0.3.5.6.zip) | `e7ffc09696f1a4e06d26dc0c228d15a9c74a0e56e3d24be6a130a0f5e49968d8` |
+
+`setup.py` and the native launcher download 0.3.5.6. The GPU and game results
+below were recorded with 0.3.4.2 and 0.3.5.5R4; 0.3.5.6 has not been through
+them yet. The launcher's own mirror serves a repacked 0.3.5.6 zip with the same
+files but a different archive hash; use the GitHub release asset.
 
 It keeps each release's host, runtime, and model together, enables lmxxf neural
 rendering in `OptiScaler.ini`, and stages the bridge, patched graphics DLLs,

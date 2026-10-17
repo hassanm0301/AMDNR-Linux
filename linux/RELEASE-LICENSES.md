@@ -47,12 +47,12 @@ structure and copyright notices.
 | Private ROCm 7.2.4 runtime and Ubuntu support libraries | Downloaded from the AMD and Ubuntu package URLs pinned in `linux/fetch-rocm.py`; package SHA-256 hashes are checked. The extracted local runtime retains the accompanying copyright/license files and package provenance. These packages are not mirrored in the add-on. |
 | Proton/Wine, DXVK, the Vulkan driver and Steam | Supplied by the user's system or chosen Proton installation. They are not distributed by this add-on. |
 
-The tested AMDNR archive is `AMDNR-v0.3.5.5R4.zip`, SHA-256
-`725cef9da0608621fe3233a7127e6511b9543061fcecaba8348b2c55c608d448`.
+The pinned AMDNR archive is `AMDNR-v0.3.5.6.zip`, SHA-256
+`e7ffc09696f1a4e06d26dc0c228d15a9c74a0e56e3d24be6a130a0f5e49968d8`.
 Its `Licenses/AMDNR_NOTICE.txt` identifies the host as GPL-3.0 with additional
 attribution terms, and says that source for that release will be published with
 AMDNR 0.5.0. The older host source in this fork is not represented as the
-corresponding source for the downloaded 0.3.5.5R4 binaries.
+corresponding source for the downloaded 0.3.5.6 binaries.
 
 The upstream notice credits **lmxxf / Kien** for the MIT-licensed port, kernels
 and runtime contributions. It separately identifies **NVIDIA** as the owner

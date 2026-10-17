@@ -97,7 +97,8 @@ change the neural renderer's hardware requirements.
 - **Native interface:** X11 or Wayland and normal desktop libraries. On some
   Debian/Ubuntu X11 installations, Qt also requires `libxcb-cursor0`.
 - **Not validated:** other GPUs, Steam Deck, Flatpak Steam, other game runners,
-  frame generation, Ray Regeneration, AMDNR Anywhere and the danielblnc backend.
+  frame generation, Ray Regeneration, AMDNR Anywhere, the danielblnc backend,
+  and the Model E / Model L upscalers (the app does not fetch them).
   Flatpak can detect a library while still denying access to the host runtime;
   this app does not alter Flatpak permissions.
 
@@ -106,9 +107,10 @@ OptiScaler; **Home** toggles the neural effect. The prepared package selects the
 **lmxxf** backend. A banner alone does not prove neural inference is running.
 Look in `lmxxf_backend.log` beside the executable for `hip=1`, successful network
 initialization, and increasing **model** and **fresh composition** counts. The
-successful Stellar Blade run recorded 3,599 model frames and 3,594 fresh outputs,
-with temporal history and all 71 network blocks active. Rendering has a substantial
-GPU cost; the measured neural kernel took about 11–13 ms per frame.
+successful Stellar Blade run (AMDNR 0.3.5.5R4) recorded 3,599 model frames and
+3,594 fresh outputs, with temporal history and all 71 network blocks active.
+Rendering has a substantial GPU cost; the measured neural kernel took about
+11–13 ms per frame.
 
 The native launcher has fixture tests for discovery, all four file operations,
 Steam rollback, interrupted-operation recovery and GUI buttons. Packaging tests
@@ -137,7 +139,7 @@ contains the native portable app, the smaller `AMDNR-Linux-v0.2.1.tar.gz` addon 
 `SHA256SUMS`. GitHub's automatic “Source code” archives do not include the prebuilt
 bridge binaries. Optional integrity check: `sha256sum --ignore-missing -c SHA256SUMS`.
 
-The app downloads AMDNR 0.3.5.5R4 and ROCm 7.2.4 directly from their publishers,
+The app downloads AMDNR 0.3.5.6 and ROCm 7.2.4 directly from their publishers,
 checks their pinned hashes, and extracts a private runtime. It does not install
 system packages, change drivers, or run package installation scripts. Those
 components retain their own terms. The native download includes editable launcher
