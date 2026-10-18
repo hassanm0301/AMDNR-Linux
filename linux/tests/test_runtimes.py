@@ -352,6 +352,7 @@ dll = out / "amd_fidelityfx_dx12.dll"
 dll.write_bytes(dll.read_bytes() + b"w" * 8 + b"k" * 8 + b"HXSRNET1" + struct.pack("<QQQ", 8, 8, 1))
 (out / "helixsr_setup.json").write_text('{"shaders": 60}')
 print("[helixsr-setup] building the network", flush=True)
+print("[helixsr-setup] drop-in DLLs for FSR 3.1 games: " + str(out / "fsr3-drop-in"), flush=True)
 """
 
 
@@ -469,6 +470,7 @@ class ModelETests(unittest.TestCase):
         self.assertTrue(runtimes.helixsr_built(folder / "amd_fidelityfx_dx12.dll"))
         self.assertEqual(details["helixsr_setup"], {"shaders": 60})
         self.assertIn("Model E: building the network", messages)
+        self.assertFalse([message for message in messages if "drop-in" in message])
         # NVIDIA's DLL, the extracted release and the compiler are gone; the archives stay cached.
         self.assertEqual(sorted(path.name for path in (cache / "model-e").iterdir()), [folder.name])
         self.assertFalse(list(cache.rglob("nvngx_dlss.dll")))

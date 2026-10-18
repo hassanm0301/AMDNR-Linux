@@ -573,7 +573,8 @@ def _run_setup(command, cwd, env, progress):
             for line in process.stdout:
                 output.append(line.rstrip())
                 del output[:-40]
-                if line.startswith("[helixsr-setup]"):
+                # Its drop-in folder is inside the temporary build folder, which is deleted.
+                if line.startswith("[helixsr-setup]") and "drop-in" not in line:
                     progress("Model E: " + line.removeprefix("[helixsr-setup]").strip())
             process.wait()
         except BaseException:
