@@ -1,3 +1,103 @@
+# Linux v0.3.0-preview — danielblnc runtime, pre-SR host, Heroic and Lutris
+
+Development **pre-release**. It adds the remaining runtime choices and game
+sources that upstream AMDNR's Windows launcher offers, as far as they can work on
+Linux. The bundled host/model/runtime remain AMDNR 0.3.5.5R4; the Linux bridge is
+rebuilt with new HIP exports. No game has been played with the new runtime
+choices yet, and this build's bridge has automated GPU validation only.
+
+## New
+
+- **danielblnc's runtime on Linux.** The HIP bridge now exports the compiler's
+  module ABI that HIP-compiled DLLs use (fat-binary, kernel and variable
+  registration, push/pop call configuration, `hipLaunchKernel`, symbol copies,
+  occupancy and stream priorities). DLSS-NR on AMD by Daniel Blanco 0.4.0, 0.4.1,
+  0.4.3, 0.5.0, 0.5.1 and 0.6.0 each completed all 700 GPU jobs with no timeouts
+  through the released 0.3.5.5R4 host's NGX/FSR2 pipeline on RX 9070 XT, with
+  output materially different from the NR-off baseline. No game has been
+  reported with it yet.
+- Choose the neural runtime per game in the manager (or `setup.py prepare
+  --daniel-runtime`). Choices follow the detected GPU generation and the
+  digests the AMDNR host pins; integrated GPUs are not offered danielblnc. The
+  runtime is downloaded from AMDNR's release only when chosen and checked
+  against pinned digests; it is never republished by this fork.
+- Optional alternate host: TheAutomatic's **OptiScaler AMD pre-SR 1.9.1-alpha**,
+  which upstream's launcher also offers (manager **Host build**, or `setup.py
+  prepare --host presr`). It drives danielblnc's own 0.3.1 build only, downloaded
+  from AMDNR's release; its Windows installer scripts are not installed. The
+  released host NGX/FSR2 pipeline passes with it on RX 9070 XT (577/577 GPU
+  passes, no timeouts, OptiPatcher loads). No game has been reported with it yet.
+  Switching host builds starts `OptiScaler.ini` from the new host's file and
+  keeps the previous one in the manager's state folder.
+- Optional OptiScaler **OptiPatcher** plugin (0.41/0.40), installed into
+  `OptiScaler/plugins/` with `LoadAsiPlugins=true`, and removed again on uninstall.
+- Changing the runtime or plugin rewrites only the matching `OptiScaler.ini`
+  keys and keeps the rest of the user's configuration. An in-game runtime choice
+  survives Repair while its files are installed.
+- Game notes before installing: titles without a temporal upscaler, anti-cheat
+  software, other OptiScaler/standalone danielblnc/ReShade installs, and setup
+  notes. Blocking notes ask for confirmation. First installs seed GTA V
+  Enhanced `[Spoofing] Dxgi=false` and Resident Evil Requiem
+  `[Menu] OverlayMenu=false`. Cyberpunk 2077 prefers `wininet.dll` and Marvel's
+  Spider-Man `dbghelp.dll` as the loading DLL.
+- Save logs and startup diagnostics include `amd_presr.log`,
+  `dlssnr_on_amd.log/.ini`, `amdnr_crash.log` and the installed component list.
+- GPU tests: a hipcc module ABI test, `--daniel-runtime` and `--optipatcher`
+  options, and a wait for the host's GPU identification thread that avoids a
+  DXVK deadlock in the harness.
+- Include `re2_framework_log.txt` in startup diagnostics and Save logs, and
+  document the older REFramework Proton startup deadlock that can leave RE9
+  black before neural rendering starts. This does not claim RE9 gameplay support.
+- Choose an OptiScaler loading DLL per game under **Advanced compatibility**.
+  Automatic selection prefers imports from the selected x64 executable and skips
+  occupied names, including differently cased filenames. Supported choices are
+  `winmm.dll`, `version.dll`, `dbghelp.dll`, `wininet.dll` and `winhttp.dll`;
+  graphics translation DLL names stay reserved.
+- **Try next DLL** changes the installed host without downloading again, tracks
+  attempts and skips occupied/tried names. Explicit selection allows a retry.
+  DLL moves, wrapper settings and ownership records commit or roll back together.
+  Repair/Update retain the proxy choice and history; older wrappers need Repair
+  using a current package before switching. The CLI supports `install --proxy`
+  and `switch-proxy --proxy next` too.
+- The library also lists Windows games installed through **Heroic** (Epic Games,
+  GOG, Amazon and sideloaded apps) and **Lutris** (Wine runner), with a
+  **Launch in Heroic** / **Launch in Lutris** button. The manager only reads their
+  settings; you add the wrapper line it shows to that launcher's wrapper/command
+  prefix. Not yet tried against a real Heroic or Lutris installation.
+- Steam thumbnails and banners in the library, cached for offline use; manually
+  added games show the icon embedded in their `.exe`.
+
+## Validation
+
+The full GPU suite passed under Proton-Wineland 11.0 (2026-09-30) on RX 9070 XT
+with the rebuilt bridge, including the new hipcc module ABI test, the released
+host under its hooks, the 720-frame NR-off/on host pipeline with lmxxf, a third
+host run with danielblnc 0.6.0 (700/700 GPU jobs, no timeouts, material change
+from the NR-off image) and OptiPatcher loading from `OptiScaler/plugins`. The
+only skip is Wineland's known shared-fence rewind limitation (see below). Each
+danielblnc version 0.4.0–0.6.0 also passed that host run on its own. All Linux
+unit tests pass, and a real pinned package with danielblnc 0.6.0 and OptiPatcher
+completed install and uninstall in a temporary game folder.
+
+All **20 CPU proxy probes** passed: five aliases, both explicit loading and
+static imports, under GE-Proton11-9 and Proton-Wineland 11.0. Each verified the
+released AMDNR host and representative Windows API forwarding. The real pinned
+payload also completed install → switch → repair → update → uninstall in a
+temporary game folder, preserving original game/prefix files and user settings.
+No games were launched for proxy validation; these results do not claim new
+game compatibility or improved FPS.
+
+These are synthetic API and pipeline checks. No new game compatibility or
+long-duration gameplay stability is claimed.
+
+## Not included
+
+- AMDNR 0.3.5.6 (Model E/L): its GitHub asset still differs from the archive
+  upstream's own manifest pins, so it is not pinned yet. Model L (d4r) needs
+  HIP/ZLUDA functions the bridge does not provide.
+- AMDNR Anywhere (needs Windows window capture) and the NVIDIA-only
+  `nvngx.dll_dlssnr.dll` forwarder.
+
 # Linux v0.2.2-preview — Synchronization and compatibility fixes
 
 Local development preview. Existing game installations and saves were not
