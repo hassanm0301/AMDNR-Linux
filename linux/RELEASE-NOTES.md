@@ -81,7 +81,7 @@ completed install and uninstall in a temporary game folder.
 
 Two early runs of the release binaries failed at the first lmxxf host-pipeline
 frame (one crash, one hang), minutes after the display was reconnected. The
-same binaries then passed six consecutive runs, and a side-by-side comparison
+same binaries then passed five consecutive runs, and a side-by-side comparison
 passed 3/3 for the previous bridge, the development build and the release
 build. The cause was not identified; please report a crash at the first frame
 with `OptiScaler.log`, `lmxxf_backend.log` and `amd_bridge.log`.
