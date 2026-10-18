@@ -384,9 +384,12 @@ class Window(QMainWindow):
         self.optipatcher_check = QCheckBox("OptiPatcher plugin (OptiScaler project)")
         self.optipatcher_check.toggled.connect(self.controls)
         component_layout.addWidget(self.optipatcher_check)
+        self.model_e_check = QCheckBox("Model E upscaler: HelixSR by lonewolf0622 (experimental)")
+        self.model_e_check.toggled.connect(self.model_e_toggled)
+        component_layout.addWidget(self.model_e_check)
         self.component_note = label("", "muted", True)
         component_layout.addWidget(self.component_note)
-        self.components_apply = self.button("Apply runtime and plugin", self.apply_components)
+        self.components_apply = self.button("Apply runtime, plugin and upscaler", self.apply_components)
         component_layout.addWidget(self.components_apply)
         actions.addWidget(self.component_panel)
         self.component_panel.hide()
@@ -493,6 +496,9 @@ class Window(QMainWindow):
         self.component_panel.setVisible(bool(resolved and choices.get("supported")))
         for widget in (self.host_choice, self.runtime_choice, self.optipatcher_check):
             widget.setEnabled(can_choose)
+        model_e = choices.get("model_e") or {}
+        self.model_e_check.setEnabled(bool(can_choose and model_e.get("gpu_supported", True)
+                                           and self.selected_host()["key"] == "amdnr"))
         self.components_apply.setVisible(bool(installed))
         self.components_apply.setEnabled(bool(can_choose and installed and not unsafe
                                               and self.selected_components() != self.installed_components()))
@@ -503,6 +509,8 @@ class Window(QMainWindow):
                      "optipatcher": plugins[0] if self.optipatcher_check.isChecked() else None}
         if self.host_choice.currentData() not in (None, "amdnr"):
             selection["host"] = self.host_choice.currentData()
+        elif self.model_e_check.isChecked() and (self.inspection.get("component_choices") or {}).get("model_e"):
+            selection["model_e"] = True
         return selection
 
     def installed_components(self):
@@ -511,7 +519,45 @@ class Window(QMainWindow):
                      "optipatcher": (installed.get("optipatcher") or {}).get("version")}
         if (installed.get("host") or {}).get("build"):
             selection["host"] = installed["host"]["build"]
+        if installed.get("model_e"):
+            selection["model_e"] = True
         return selection
+
+    def model_e_notice(self, choice):
+        """The disclosure shown once before Model E can be chosen."""
+        return (
+            f"Model E is HelixSR {choice['helixsr']} by lonewolf0622 ({choice['homepage']}), an upscaler that runs "
+            "NVIDIA's DLSS network as Direct3D 12 shaders. It is neither AMDNR's work nor this launcher's, and it is "
+            "used under the HelixSR Freeware License.\n\n"
+            "To set it up, this launcher will:\n"
+            f"• download HelixSR {choice['helixsr']} from its author's GitHub release and Microsoft's DirectX shader "
+            "compiler from Microsoft's GitHub;\n"
+            f"• download NVIDIA's DLSS {choice['dlss']} DLL from NVIDIA's GitHub. NVIDIA's licence applies: "
+            f"{choice['dlss_license']};\n"
+            "• run HelixSR's own setup scripts on this PC to build HelixSR's network from that DLL. This needs Python 3 "
+            "with numpy, and Proton or Wine for the shader compiler; it takes about a minute.\n\n"
+            "NVIDIA's DLL is deleted after the build. The built files contain NVIDIA's network: they stay on this PC. "
+            "Do not share or upload them.\n\n"
+            "In the game Model E runs where FSR 3.1 or FSR 4 would (D3D12 games only). On Linux it has passed "
+            "automated tests only; no game report yet.\n\nAccept and continue?")
+
+    def model_e_toggled(self, checked):
+        choice = (self.inspection.get("component_choices") or {}).get("model_e") or {}
+        if checked and not choice.get("accepted"):
+            answer = QMessageBox.question(self, "Model E (HelixSR)", self.model_e_notice(choice))
+            accepted = answer == QMessageBox.StandardButton.Yes
+            if accepted:
+                try:
+                    self.controller.accept_model_e()
+                    choice["accepted"] = True
+                except Exception as error:
+                    accepted = False
+                    self.failure(error)
+            if not accepted:
+                self.model_e_check.blockSignals(True)
+                self.model_e_check.setChecked(False)
+                self.model_e_check.blockSignals(False)
+        self.controls()
 
     def selected_host(self):
         choices = self.inspection.get("component_choices") or {}
@@ -558,6 +604,12 @@ class Window(QMainWindow):
         if len(choices.get("hosts") or []) > 1:
             text += ("\nChanging the host build replaces OptiScaler.ini with that host's own; the previous file is "
                      "kept in the launcher's state folder.")
+        model_e = choices.get("model_e")
+        if model_e:
+            text += ("\nModel E is HelixSR, an upscaler by lonewolf0622 that replaces FSR 3.1/4 in D3D12 games. "
+                     "It is built once on this PC from NVIDIA's DLSS DLL" + (" (already built)." if model_e.get("built") else ".")
+                     + (" It needs the AMDNR host." if host["key"] != "amdnr" else "")
+                     + ("" if model_e.get("gpu_supported", True) else " It needs an RDNA 1 or newer GPU."))
         return text
 
     def show_components(self, result):
@@ -574,6 +626,10 @@ class Window(QMainWindow):
         self.fill_runtimes(selected.get("daniel"))
         self.optipatcher_check.setChecked(bool(selected.get("optipatcher")))
         self.optipatcher_check.setVisible(bool(choices.get("optipatcher")))
+        self.model_e_check.blockSignals(True)
+        self.model_e_check.setChecked(bool(selected.get("model_e")))
+        self.model_e_check.setVisible(bool(choices.get("model_e")))
+        self.model_e_check.blockSignals(False)
         self.host_choice.blockSignals(False)
         self.optipatcher_check.blockSignals(False)
         self.component_note.setText(self.component_text())

@@ -117,12 +117,18 @@ def fetch_runtime(output, cache):
     module.fetch(output, cache)
 
 
-def prepare(compiler, archive=None, output=None, cache=None, daniel=None, optipatcher=None, host=None):
+def prepare(compiler, archive=None, output=None, cache=None, daniel=None, optipatcher=None, host=None,
+            model_e=False, dlss=None, accept_dlss_license=False, progress=None):
     """daniel: a pinned danielblnc runtime version; optipatcher: a pinned
     plugin version (or True for the newest). Both are downloaded from their
     publishers, verified, and staged only when requested. host: None for the
     AMDNR release, or an alternate host build key ("presr"), which needs
-    danielblnc's runtime and defaults to the newest one it drives."""
+    danielblnc's runtime and defaults to the newest one it drives.
+
+    model_e: also stage Model E (HelixSR), built on this PC by HelixSR's own
+    setup from NVIDIA's DLSS DLL: dlss names a local copy, otherwise
+    accept_dlss_license must be True to download NVIDIA's. A Model E built
+    earlier into cache is reused."""
     if sys.version_info < (3, 12):
         raise ValueError("Python 3.12 or newer is required.")
     compiler = Path(compiler).expanduser().resolve()
@@ -148,15 +154,22 @@ def prepare(compiler, archive=None, output=None, cache=None, daniel=None, optipa
         runtimes.daniel_runtime(daniel)  # reject an unknown version before any download
     if optipatcher not in (None, False):
         optipatcher = runtimes.optipatcher(None if optipatcher is True else optipatcher).version
+    if model_e and build is not None:
+        raise ValueError(f"{build.title} cannot load Model E; it needs the AMDNR host.")
     expected = (build.sha256, build.title) if build else (RELEASE_SHA256, f"AMDNR {RELEASE_VERSION}")
     if archive is not None:
         archive = Path(archive).expanduser().resolve()
         if not archive.is_file() or digest(archive) != expected[0]:
             raise ValueError(f"Expected the pinned, unmodified {expected[1]} archive; checksum mismatch.")
-    elif build is not None:
+    built = None
+    if model_e:
+        # Built before the larger downloads, so a missing prerequisite stops early.
+        built = runtimes.build_model_e(cache, dlss, accept_dlss_license,
+                                       progress=progress or (lambda message: print(message, flush=True)))
+    if archive is None and build is not None:
         print(f"Downloading pinned {build.title} ({build.homepage}).", flush=True)
         archive = runtimes.prepare_host(build.key, cache)[1]
-    else:
+    elif archive is None:
         archive = fetch_archive(cache)
     # Always extract a fresh runtime from verified package archives. A mutable
     # runtime from a previous preparation is never silently trusted or reused.
@@ -171,6 +184,8 @@ def prepare(compiler, archive=None, output=None, cache=None, daniel=None, optipa
         if optipatcher not in (None, False):
             print(f"Downloading pinned OptiPatcher {optipatcher}.", flush=True)
             components["optipatcher"] = runtimes.prepare_optipatcher(optipatcher, cache)
+        if built is not None:
+            components["model_e"] = built
         manage.stage(archive, compiler, output, ROOT / "build", runtime, **components)
     print(f"Prepared {output}\nNo game files were changed. Install with linux/manage.py install.")
     return output
@@ -191,8 +206,21 @@ def main(argv=None):
                          help="Also stage danielblnc's runtime and select it (NrBackend=daniel)")
     command.add_argument("--optipatcher", nargs="?", const=True, choices=[item.version for item in runtimes.OPTIPATCHER],
                          help="Also stage OptiScaler's OptiPatcher plugin (newest when no version is given)")
+    command.add_argument("--model-e", action="store_true",
+                         help="Also stage Model E (HelixSR by lonewolf0622), built on this PC by HelixSR's own setup "
+                              "from NVIDIA's DLSS DLL; needs Python 3 with numpy and Proton or Wine")
+    dlss = command.add_mutually_exclusive_group()
+    dlss.add_argument("--dlss", type=Path, metavar="DLL",
+                      help=f"NVIDIA's DLSS {runtimes.DLSS_FOR_HELIXSR.version} nvngx_dlss.dll you already have, "
+                           "for example from a game")
+    dlss.add_argument("--accept-nvidia-dlss-license", action="store_true",
+                      help=f"Download NVIDIA's DLSS {runtimes.DLSS_FOR_HELIXSR.version} DLL from NVIDIA's GitHub; "
+                           f"you accept NVIDIA's licence ({runtimes.DLSS_LICENSE})")
     args = parser.parse_args(argv)
-    prepare(args.compiler, args.archive, args.output, args.cache, args.daniel_runtime, args.optipatcher, args.host)
+    if (args.dlss or args.accept_nvidia_dlss_license) and not args.model_e:
+        parser.error("--dlss and --accept-nvidia-dlss-license are used only with --model-e")
+    prepare(args.compiler, args.archive, args.output, args.cache, args.daniel_runtime, args.optipatcher, args.host,
+            args.model_e, args.dlss, args.accept_nvidia_dlss_license)
 
 
 if __name__ == "__main__":

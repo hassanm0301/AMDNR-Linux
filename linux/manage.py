@@ -38,9 +38,10 @@ def write_json(path, value):
     temp.write_text(json.dumps(value, indent=2) + "\n")
     temp.replace(path)
 
-def stage(archive, compiler, output, build, rocm, daniel=None, optipatcher=None):
-    """Stage a package. daniel is (Runtime, directory of verified files) and
-    optipatcher is (Plugin, verified .asi path); both come from runtimes.
+def stage(archive, compiler, output, build, rocm, daniel=None, optipatcher=None, model_e=None):
+    """Stage a package. daniel is (Runtime, directory of verified files),
+    optipatcher is (Plugin, verified .asi path) and model_e is the (folder,
+    details) of a Model E built on this PC; all come from runtimes.
     archive is a pinned AMDNR release or a pinned alternate host build."""
     if output.exists():
         raise ValueError(f"Output already exists: {output}")
@@ -88,6 +89,15 @@ def stage(archive, compiler, output, build, rocm, daniel=None, optipatcher=None)
                 with package.open(entry) as source, destination.open("wb") as sink:
                     shutil.copyfileobj(source, sink)
         components = {"neural_runtime": "lmxxf", "daniel": None, "optipatcher": None}
+        if model_e:
+            if alternate or not runtimes.host_loads_model_e(target / "winmm.dll"):
+                raise ValueError(f"{host_name} cannot load Model E; it needs AMDNR 0.3.5.6 or newer.")
+            folder, details = model_e
+            digest = runtimes.stage_model_e(folder, target)
+            # Recorded only when present, so other packages keep their existing description.
+            components["model_e"] = {"version": runtimes.HELIXSR.version, "url": runtimes.HELIXSR.url,
+                                     "sha256": digest, "source_sha256": runtimes.HELIXSR.sha256,
+                                     "dlss_version": details.get("dlss_version", runtimes.DLSS_FOR_HELIXSR.version)}
         if daniel:
             runtime, files = daniel
             # The host pins every pass DLL it drives; refuse a pairing it would reject at runtime.
@@ -133,6 +143,9 @@ def stage(archive, compiler, output, build, rocm, daniel=None, optipatcher=None)
         settings = {("DlssNr", "Enabled"): "true", ("DlssNr", "NrBackend"): components["neural_runtime"]}
         if optipatcher:
             settings[("Plugins", "LoadAsiPlugins")] = "true"
+        if model_e:
+            settings[("Upscalers", "FfxSRProvider")] = runtimes.MODEL_E_PROVIDER
+            settings[("Libraries", "HelixSRPath")] = runtimes.MODEL_E_FOLDER
         seen = set()
         for index, line in enumerate(lines):
             stripped = line.strip()
@@ -143,9 +156,12 @@ def stage(archive, compiler, output, build, rocm, daniel=None, optipatcher=None)
                 if key in settings:
                     lines[index] = key[1] + "=" + settings[key]
                     seen.add(key)
-        for section, key in settings.keys() - seen:
+        for section, key in sorted(settings.keys() - seen):
             # Insert at the existing section so no duplicate sections are produced.
-            index = next(i for i, line in enumerate(lines) if line.strip() == f"[{section}]")
+            index = next((i for i, line in enumerate(lines) if line.strip() == f"[{section}]"), None)
+            if index is None:
+                lines.append(f"[{section}]")
+                index = len(lines) - 1
             lines.insert(index + 1, key + "=" + settings[(section, key)])
         ini.write_text("\n".join(lines) + "\n")
         write_json(bundle / "components.json", components)
@@ -185,6 +201,10 @@ def stage(archive, compiler, output, build, rocm, daniel=None, optipatcher=None)
                if daniel else "Neural runtime: lmxxf, built into the AMDNR release.\n")
             + (f"Plugin: OptiPatcher {components['optipatcher']['version']} (OptiScaler project, unmodified, "
                f"{components['optipatcher']['url']}).\n" if optipatcher else "")
+            + (f"Upscaler: Model E, HelixSR {runtimes.HELIXSR.version} by lonewolf0622 ({runtimes.HELIXSR_HOMEPAGE}, "
+               f"HelixSR Freeware License), in {runtimes.MODEL_E_FOLDER}. Its network was built on this PC from "
+               f"NVIDIA's DLSS {components['model_e']['dlss_version']} DLL and remains NVIDIA's property: "
+               "do not share or upload these files.\n" if model_e else "")
             + "See Licenses and amdnr-linux/rocm/licenses for third-party terms.\n")
         shutil.copy2(ROOT.parent / "LICENSE", bundle / "LICENSE")
         for name in ("COPYING", "LICENSE", "AUTHORS"):
@@ -313,6 +333,9 @@ def main():
     s.add_argument("--daniel-runtime", type=Path, metavar="ZIP",
                    help="Pinned, unmodified danielblnc vX.Y.Z-Runtime.zip; selects NrBackend=daniel")
     s.add_argument("--optipatcher", type=Path, metavar="ASI", help="Pinned, unmodified OptiPatcher_vX.YY.asi")
+    s.add_argument("--model-e", type=Path, metavar="DIR",
+                   help="Model E built on this PC by setup.py prepare --model-e (its HelixSR folder); "
+                        "selects FfxSRProvider=helix_e")
     i = sub.add_parser("install")
     i.add_argument("package", type=Path)
     i.add_argument("game", type=Path)
@@ -341,7 +364,10 @@ def main():
                 if plugin is None:
                     raise ValueError("Expected a pinned, unmodified OptiPatcher plugin; checksum mismatch.")
                 optipatcher = (plugin, args.optipatcher)
-            stage(args.archive, args.compiler, args.output, args.build, args.rocm, daniel, optipatcher)
+            model_e = runtimes.load_model_e(args.model_e) if args.model_e else None
+            if args.model_e and model_e is None:
+                raise ValueError(f"Not a Model E built by setup.py for HelixSR {runtimes.HELIXSR.version}: {args.model_e}")
+            stage(args.archive, args.compiler, args.output, args.build, args.rocm, daniel, optipatcher, model_e)
     elif args.command == "install":
         install(args.package.resolve(), args.game, args.proxy, args.exe)
     elif args.command == "switch-proxy":

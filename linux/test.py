@@ -13,7 +13,9 @@ import signal
 import subprocess
 import tempfile
 import time
+from array import array
 from launch import environment, prepare_prefix, restore_prefixes
+import runtimes
 
 ROOT = Path(__file__).resolve().parent
 DANIEL_FILES = ("dlssnr_amd_pass1.dll", "dlssnr_amd_pass2.dll", "dlssnr_amd_pass3.dll", "dlssnr_on_amd_weights.bin")
@@ -79,8 +81,12 @@ def run(command, env, directory, log, timeout=180, expect_pass=False, allow_skip
                   for line in text.splitlines() if line.startswith("BENCHMARK: ")]
     return dict(result, status="passed_with_skips" if skips else "passed", benchmarks=benchmarks, skips=skips)
 
-def host_config(source, destination, settings):
-    """Change only explicit settings in an isolated copy of the release INI."""
+def host_config(source, destination, settings, added=()):
+    """Change only explicit settings in an isolated copy of the release INI.
+
+    Keys in added need not exist in the release INI; missing ones are
+    inserted at the start of their section.
+    """
     lines = source.read_text(encoding="utf-8-sig").splitlines()
     section, seen = "", set()
     for index, line in enumerate(lines):
@@ -92,9 +98,26 @@ def host_config(source, destination, settings):
             if key in settings:
                 lines[index] = key[1] + "=" + settings[key]
                 seen.add(key)
+    for section, key in [item for item in added if item in settings and item not in seen]:
+        index = next((i for i, line in enumerate(lines) if line.strip() == f"[{section}]"), None)
+        if index is None:
+            raise ValueError(f"Host test INI has no [{section}] section")
+        lines.insert(index + 1, key + "=" + settings[(section, key)])
+        seen.add((section, key))
     if seen != settings.keys():
         raise ValueError(f"Host test settings missing from package: {settings.keys() - seen}")
     destination.write_text("\n".join(lines) + "\n")
+
+
+def image_change(path, reference):
+    """Mean absolute difference and changed fraction of two float32 host outputs."""
+    values, baseline = array("f"), array("f")
+    values.frombytes(path.read_bytes())
+    baseline.frombytes(reference.read_bytes())
+    if not values or len(values) != len(baseline):
+        raise RuntimeError(f"Host outputs differ in size: {path.name}, {reference.name}")
+    deltas = [abs(a - b) for a, b in zip(values, baseline)]
+    return sum(deltas) / len(deltas), sum(delta > .001 for delta in deltas) / len(deltas)
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -121,8 +144,11 @@ def main():
                              "adds a host-pipeline run with NrBackend=daniel (implies --host-pipeline)")
     parser.add_argument("--optipatcher", type=Path, metavar="ASI",
                         help="OptiPatcher plugin; host runs load it from OptiScaler/plugins and must log it (implies --host-pipeline)")
+    parser.add_argument("--model-e", type=Path, metavar="DIR",
+                        help="Model E built by setup.py prepare --model-e (its HelixSR folder); adds host runs on the "
+                             "FSR 3.1 path without and with Model E, then Model E with lmxxf NR (implies --host-pipeline)")
     args = parser.parse_args()
-    if args.daniel_runtime or args.optipatcher:
+    if args.daniel_runtime or args.optipatcher or args.model_e:
         args.host_pipeline = True
     if not 3 <= args.frames <= 10000:
         parser.error("--frames must be between 3 and 10000")
@@ -146,6 +172,14 @@ def main():
         args.optipatcher = args.optipatcher.resolve()
         if not args.optipatcher.is_file():
             parser.error("--optipatcher must name the plugin file")
+    if args.model_e:
+        args.model_e = args.model_e.resolve()
+        if not args.lmxxf:
+            parser.error("--model-e needs a package with the AMDNR host and lmxxf runtime")
+        if runtimes.load_model_e(args.model_e) is None:
+            parser.error("--model-e must name a Model E folder built by setup.py prepare --model-e")
+        if not runtimes.host_loads_model_e(package / "winmm.dll"):
+            parser.error("This package's host cannot load Model E; stage AMDNR 0.3.5.6 or newer")
     work.mkdir(parents=True, exist_ok=True)
     # A second run in the same directory must not replace evidence or restore
     # prefix files while the first run still owns that isolated environment.
@@ -223,6 +257,10 @@ def run_suite(args, package, build, work, proton):
                 (work / "OptiScaler/plugins").mkdir(parents=True, exist_ok=True)
                 shutil.copy2(args.optipatcher, work / "OptiScaler/plugins/OptiPatcher.asi")
                 settings[("Plugins", "LoadAsiPlugins")] = "true"
+            shutil.rmtree(work / runtimes.MODEL_E_FOLDER, ignore_errors=True)
+            if args.model_e:
+                # The same layout and receipt staging produces for a game.
+                runtimes.stage_model_e(args.model_e, work)
             host_config(package / "OptiScaler.ini", work / "OptiScaler.ini", settings)
         for name in ("syscall_dispatch.exe", "hip_smoke.exe", "exception_smoke.exe", "exception_context.exe", "compute.hsaco",
                      "hip_registration.exe", "hip_registration_module.dll", "registered.hipfb",
@@ -243,6 +281,9 @@ def run_suite(args, package, build, work, proton):
         if args.optipatcher:
             with args.optipatcher.open("rb") as binary:
                 report["binaries"]["OptiScaler/plugins/OptiPatcher.asi"] = hashlib.file_digest(binary, "sha256").hexdigest()
+        if args.model_e:
+            with (work / runtimes.MODEL_E_FOLDER / runtimes.MODEL_E_DLLS[0]).open("rb") as binary:
+                report["binaries"]["model_e/" + runtimes.MODEL_E_DLLS[0]] = hashlib.file_digest(binary, "sha256").hexdigest()
         prefix_started = True
         execute([proton / "proton", "run", "cmd.exe", "/c", "exit"], env, work, work / "prefix.log")
         lib = proton / ("files/lib64" if (proton / "files/lib64").is_dir() else "files/lib")
@@ -317,7 +358,49 @@ def run_suite(args, package, build, work, proton):
                     if not loaded:
                         raise RuntimeError(f"Host did not load OptiScaler/plugins/OptiPatcher.asi during the {label} run; see OptiScaler.log")
                     print(f"PASS: host loaded OptiScaler/plugins/OptiPatcher.asi ({label})", flush=True)
-        report["status"] = "passed_with_skips" if any(test["status"] in ("skipped", "passed_with_skips") for test in report["tests"]) else "passed"
+            if args.model_e:
+                # Model E replaces the FSR 3.1/4 provider, so these runs use the FSR 3.1 path.
+                provider = {("Upscalers", "FfxSRProvider"): runtimes.MODEL_E_PROVIDER,
+                            ("Libraries", "HelixSRPath"): runtimes.MODEL_E_FOLDER}
+                helix_log = work / runtimes.MODEL_E_FOLDER / "helixsr.log"
+                for label, mode, model_e in (("fsr31", "baseline", False), ("model-e", "baseline", True),
+                                             ("model-e-neural", "neural", True)):
+                    run_settings = {**settings, ("Upscalers", "Dx12Upscaler"): "fsr31",
+                                    ("DlssNr", "Enabled"): "true" if mode == "neural" else "false",
+                                    ("DlssNr", "NrBackend"): "lmxxf"}
+                    if model_e:
+                        run_settings.update(provider)
+                    host_config(package / "OptiScaler.ini", work / "OptiScaler.ini", run_settings, added=provider)
+                    for name in (*logs, helix_log):
+                        (work / name).unlink(missing_ok=True)
+                    reference = windows(work / "host-model-e.bin") if mode == "neural" else "-"
+                    execute([wine, work / "host_neural.exe", windows(work / "winmm.dll"), mode,
+                             windows(work / f"host-{label}.bin"), reference], env, work,
+                            work / f"host-pipeline-{label}.log", expect_pass=True)
+                    for name in (*logs, helix_log):
+                        if (work / name).exists():
+                            shutil.copy2(work / name, work / f"{Path(name).stem}-host-{label}.log")
+                    host_log = (work / "OptiScaler.log").read_text(errors="replace")
+                    # The host checks the receipt first, then accepts HelixSR's FFX context.
+                    verified = "requested=helix_e files_verified=true" in host_log
+                    accepted = re.search(r"\[SR_PROVIDER\] requested=helix_e ready=true actual=HelixSR[^\n]*"
+                                         r"model=E reason=context_accepted", host_log)
+                    if model_e and not (verified and accepted):
+                        raise RuntimeError(f"Host did not run Model E during the {label} run; see OptiScaler-host-{label}.log")
+                    if model_e and "network running" not in (work / f"helixsr-host-{label}.log").read_text(errors="replace"):
+                        raise RuntimeError(f"HelixSR's network did not run during the {label} run; see helixsr-host-{label}.log")
+                    if not model_e and re.search(r"actual=HelixSR", host_log):
+                        raise RuntimeError("Host ran Model E without FfxSRProvider=helix_e; see OptiScaler-host-fsr31.log")
+                    if model_e:
+                        print(f"PASS: host verified the Model E receipt and HelixSR's network ran ({label})", flush=True)
+                    if label == "model-e":
+                        # Compared before the last run, so the prefix's server is still up for cleanup.
+                        change, changed = image_change(work / "host-model-e.bin", work / "host-fsr31.bin")
+                        print(f"Model E vs FSR 3.1: mean_abs_change={change:g} changed_fraction={changed:.3f}", flush=True)
+                        if change < .0001 or changed < .01:
+                            raise RuntimeError("Model E output did not materially differ from FSR 3.1; HelixSR may not have run")
+                        print("PASS: Model E output differs from FSR 3.1 on the same frames", flush=True)
+        report["status"] ="passed_with_skips" if any(test["status"] in ("skipped", "passed_with_skips") for test in report["tests"]) else "passed"
     except BaseException as error:
         original_error = error
         report.update(status="failed", error=str(error))

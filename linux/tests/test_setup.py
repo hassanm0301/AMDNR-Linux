@@ -209,6 +209,36 @@ class SetupTests(unittest.TestCase):
             fetch.assert_not_called()
         self.assertFalse(self.output.exists())
 
+    def test_model_e_is_built_before_the_host_download_and_staged(self):
+        built = (self.root / "model-e", {"dlss_version": "310.7.0"})
+        with patch.object(setup, "fetch_archive", side_effect=AssertionError("built after the download")) as amdnr, \
+                patch.object(setup.runtimes, "build_model_e", side_effect=setup.runtimes.ModelEConsentNeeded("accept")) as build, \
+                self.assertRaises(setup.runtimes.ModelEConsentNeeded):
+            setup.prepare(self.compiler, output=self.output, cache=self.cache, model_e=True)
+        amdnr.assert_not_called()
+        self.assertEqual(build.call_args.args[:3], (self.cache, None, False))
+        with patch.object(setup, "fetch_archive", return_value=self.root / "amdnr.zip"), \
+                patch.object(setup, "fetch_runtime"), \
+                patch.object(setup.runtimes, "build_model_e", return_value=built) as build, \
+                patch.object(setup.manage, "stage") as stage:
+            setup.prepare(self.compiler, output=self.output, cache=self.cache, model_e=True,
+                          dlss=self.root / "nvngx_dlss.dll", accept_dlss_license=False)
+        self.assertEqual(build.call_args.args[:3], (self.cache, self.root / "nvngx_dlss.dll", False))
+        self.assertEqual(stage.call_args.kwargs["model_e"], built)
+        with patch.object(setup.runtimes, "build_model_e") as build, self.assertRaisesRegex(ValueError, "needs the AMDNR host"):
+            setup.prepare(self.compiler, output=self.root / "other", cache=self.cache, host="presr", model_e=True)
+        build.assert_not_called()
+
+    def test_dlss_options_need_model_e(self):
+        for options in (["--dlss", str(self.compiler)], ["--accept-nvidia-dlss-license"]):
+            with self.subTest(options), patch.object(setup, "prepare") as prepare, \
+                    patch("sys.stderr"), self.assertRaises(SystemExit):
+                setup.main(["prepare", "--compiler", str(self.compiler), *options])
+            prepare.assert_not_called()
+        with patch.object(setup, "prepare") as prepare:
+            setup.main(["prepare", "--compiler", str(self.compiler), "--model-e", "--accept-nvidia-dlss-license"])
+        self.assertEqual(prepare.call_args.args[7:], (True, None, True))
+
     def test_binutils_is_not_required_by_preparation(self):
         with patch.object(setup.shutil, "which", return_value=None), \
                 patch.object(setup, "fetch_archive") as download, \

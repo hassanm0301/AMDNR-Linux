@@ -61,7 +61,7 @@ class ComponentTransactionTests(unittest.TestCase):
         self.addCleanup(running.stop)
         self.runtimes = self.backend.runtimes
 
-    def package(self, label, daniel=False, optipatcher=False, ini=INI, host=False):
+    def package(self, label, daniel=False, optipatcher=False, ini=INI, host=False, model_e=False):
         package = self.root / ("package " + label)
         for name in ("winmm.dll", "d3d12.dll", "d3d12core.dll", "d3dcompiler_47.dll", "amdnr-linux/run.sh",
                      "amdnr-linux/launch.py", "amdnr-linux/proxies.py", "amdnr-linux/x86_64-unix/amdhip64_7.so",
@@ -85,6 +85,13 @@ class ComponentTransactionTests(unittest.TestCase):
             (package / self.runtimes.OPTIPATCHER_PATH).parent.mkdir(parents=True, exist_ok=True)
             (package / self.runtimes.OPTIPATCHER_PATH).write_bytes(b"asi")
             components["optipatcher"] = {"version": "0.41", "url": "fixture", "sha256": sha(b"asi")}
+        if model_e:
+            folder = package / self.runtimes.MODEL_E_FOLDER
+            folder.mkdir()
+            for name in self.runtimes.MODEL_E_DLLS:
+                (folder / name).write_bytes(b"helixsr built here")
+            (folder / self.runtimes.MODEL_E_RECEIPT).write_text("receipt")
+            components["model_e"] = {"version": "1.8.1", "url": "fixture", "sha256": sha(b"helixsr built here")}
         if host:
             # Alternate hosts read their own settings; model that with a distinct INI.
             (package / "OptiScaler.ini").write_bytes(b"; pre-SR\r\n[DlssNr]\r\nEnabled=true\r\nNrBackend=daniel\r\n")
@@ -164,6 +171,74 @@ class ComponentTransactionTests(unittest.TestCase):
         self.assertEqual(saved.read_bytes(), mine)
         self.backend.uninstall(self.game)
         self.assertEqual(sorted(path.name for path in self.game.iterdir()), ["save.dat"])
+
+    def test_model_e_switches_the_provider_keys_and_back(self):
+        self.backend.install(self.game, self.package("A"))
+        edited = self.ini().replace(b"Enabled=true", b"Enabled=true\r\nUserSetting=kept")
+        (self.game / "OptiScaler.ini").write_bytes(edited)
+        result = self.backend.update(self.game, self.package("B", model_e=True))
+        self.assertEqual(result["components"]["model_e"]["version"], "1.8.1")
+        self.assertEqual(ini_value(self.ini(), "Upscalers", "FfxSRProvider"), "helix_e")
+        self.assertEqual(ini_value(self.ini(), "Libraries", "HelixSRPath"), "AMDNR-SR-E")
+        self.assertIn(b"UserSetting=kept", self.ini())
+        for name in self.runtimes.MODEL_E_DLLS:
+            self.assertTrue((self.game / "AMDNR-SR-E" / name).is_file())
+        self.backend.update(self.game, self.package("C"))
+        self.assertEqual(ini_value(self.ini(), "Upscalers", "FfxSRProvider"), "auto")
+        self.assertEqual(ini_value(self.ini(), "Libraries", "HelixSRPath"), "")
+        # The emptied folder goes at uninstall, like OptiScaler/plugins.
+        self.assertEqual(list((self.game / "AMDNR-SR-E").iterdir()), [])
+        self.backend.update(self.game, self.package("D", model_e=True))
+        # HelixSR writes its log beside its DLL; uninstall keeps it and everything it did not install.
+        (self.game / "AMDNR-SR-E/helixsr.log").write_text("network running")
+        self.backend.uninstall(self.game)
+        self.assertEqual(sorted(path.relative_to(self.game).as_posix() for path in self.game.rglob("*")),
+                         ["AMDNR-SR-E", "AMDNR-SR-E/helixsr.log", "OptiScaler.ini", "save.dat"]
+                         if (self.game / "OptiScaler.ini").exists() else ["AMDNR-SR-E", "AMDNR-SR-E/helixsr.log", "save.dat"])
+
+    def test_model_e_files_must_match_their_description(self):
+        package = self.package("A", model_e=True)
+        (package / "AMDNR-SR-E/amd_fidelityfx_upscaler_dx12.dll").write_bytes(b"other build")
+        with self.assertRaisesRegex(ConflictError, "Model E files do not match"):
+            self.backend.install(self.game, package)
+        undeclared = self.package("B")
+        (undeclared / "AMDNR-SR-E").mkdir()
+        (undeclared / "AMDNR-SR-E/amd_fidelityfx_dx12.dll").write_bytes(b"helixsr")
+        with self.assertRaisesRegex(ConflictError, "undeclared Model E"):
+            self.backend.install(self.game, undeclared)
+        self.assertEqual(sorted(path.name for path in self.game.iterdir()), ["save.dat"])
+        base = {"neural_runtime": "lmxxf", "daniel": None, "optipatcher": None}
+        self.assertTrue(_components(dict(base, model_e={"version": "1.8.1", "sha256": sha(b"x")}))["model_e"])
+        host = {"build": "presr", "version": "1.9.1-alpha", "sha256": sha(b"host")}
+        for bad in (dict(base, model_e=None), dict(base, model_e={"version": "1.8.1", "sha256": "x"}),
+                    dict(base, neural_runtime="daniel", daniel={"version": "0.3.1", "sha256": sha(b"zip")},
+                         host=host, model_e={"version": "1.8.1", "sha256": sha(b"x")})):
+            with self.subTest(bad), self.assertRaises(ValueError):
+                _components(bad)
+
+    def test_model_e_is_passed_to_releases_that_support_it(self):
+        seen = []
+
+        def prepare(compiler, archive=None, output=None, cache=None, daniel=None, optipatcher=None, host=None,
+                    model_e=False, dlss=None, accept_dlss_license=False, progress=None):
+            seen.append((daniel, model_e, accept_dlss_license, callable(progress)))
+            raise RuntimeError("stop before staging")
+        with patch.object(self.backend, "_find_compiler", return_value=self.root / "compiler.dll"), \
+                patch.object(self.backend.setup, "prepare", prepare):
+            self.assertTrue(self.backend.supports_model_e())
+            with self.assertRaises(RuntimeError):
+                self.backend.prepare_package(components={"daniel": None, "model_e": True}, accept_dlss_license=True)
+            with self.assertRaises(RuntimeError):
+                self.backend.prepare_package(components={"daniel": "0.6.0", "model_e": False})
+        self.assertEqual(seen, [(None, True, True, True), ("0.6.0", False, False, False)])
+
+        def older(compiler, archive=None, output=None, cache=None, daniel=None, optipatcher=None, host=None):
+            raise AssertionError("must not run")
+        with patch.object(self.backend.setup, "prepare", older):
+            self.assertFalse(self.backend.supports_model_e())
+            self.assertFalse(self.backend.model_e_built())
+            with self.assertRaisesRegex(BackendError, "cannot add Model E"):
+                self.backend.prepare_package(components={"model_e": True})
 
     def test_component_metadata_names_only_alternate_hosts(self):
         base = {"neural_runtime": "daniel", "daniel": {"version": "0.3.1", "sha256": sha(b"zip")}, "optipatcher": None}
@@ -325,6 +400,37 @@ class ControllerComponentTests(unittest.TestCase):
                 self.app.operate("repair", self.game)
         self.assertEqual(seen, [{"daniel": "0.3.1", "optipatcher": None, "host": "presr"}] * 2)
         self.assertEqual(repair.call_args.kwargs.get("seeds"), seeds)
+
+    def test_model_e_needs_its_notice_accepted_and_the_amdnr_host(self):
+        choice = self.app.inspect(self.game)["component_choices"]["model_e"]
+        self.assertEqual((choice["helixsr"], choice["dlss"], choice["accepted"], choice["gpu_supported"]),
+                         ("1.8.1", "310.7.0", False, True))
+        with self.assertRaisesRegex(ValueError, "accept the Model E notice"):
+            self.app.set_components(self.game, model_e=True)
+        self.app.accept_model_e()
+        self.assertTrue(self.app.component_choices(self.game)["model_e"]["accepted"])
+        with self.assertRaisesRegex(ValueError, "needs the AMDNR host"):
+            self.app.set_components(self.game, daniel="0.3.1", host="presr", model_e=True)
+        self.app.set_components(self.game, daniel="0.6.0", model_e=True)
+        self.assertEqual(self.app.components(self.game), {"daniel": "0.6.0", "optipatcher": None, "model_e": True})
+        seen = []
+        from native_launcher import controller
+        real = controller.Controller.prepare
+        with patch.object(self.app.backend, "prepare_package",
+                          side_effect=lambda *args, **options: seen.append(options) or self.fixture.package), \
+                patch.object(self.app, "prepare", side_effect=lambda *args: real(self.app, *args)), \
+                patch.object(controller, "persistent_python", return_value=None):
+            self.app.operate("install", self.game)
+        self.assertEqual(seen[0]["components"], {"daniel": "0.6.0", "optipatcher": None, "model_e": True})
+        self.assertIs(seen[0]["accept_dlss_license"], True)
+        # A newer HelixSR or NVIDIA DLL pin asks again.
+        self.app.settings["model_e_consent"]["helixsr"] = "1.7"
+        self.assertFalse(self.app.model_e_accepted())
+        with patch.object(self.app, "prepare") as prepare, self.assertRaisesRegex(ValueError, "accept the Model E notice"):
+            self.app.operate("repair", self.game)
+        prepare.assert_not_called()
+        self.app._gpu = {"gfx": "gfx906", "generation": "other", "apu": False}
+        self.assertFalse(self.app.component_choices(self.game)["model_e"]["gpu_supported"])
 
     def test_install_seeds_first_install_settings(self):
         seeds = {("Menu", "OverlayMenu"): "false"}

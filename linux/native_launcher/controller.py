@@ -317,7 +317,35 @@ class Controller:
         return dict(supported=supported, gpu=gpu, host_version=self.host_version(host=host),
                     hosts=hosts, host_runtimes=host_runtimes, runtimes=host_runtimes.get(host, []),
                     optipatcher=[plugin.version for plugin in runtimes.OPTIPATCHER] if supported else [],
-                    selected=selected)
+                    model_e=self.model_e_choice() if supported else None, selected=selected)
+
+    def model_e_choice(self, backend=None):
+        """What the Model E disclosure needs to say, or None when this release cannot build it."""
+        backend = backend or self.backend
+        if not backend.supports_model_e():
+            return None
+        runtimes = backend.runtimes
+        gpu = self.gpu()
+        # HelixSR needs wave32: RDNA 1 and newer. An undetected GPU is not refused.
+        gpu_supported = gpu is None or gpu.get("generation") in ("rdna1", "rdna2", "rdna3", "rdna4")
+        return dict(helixsr=runtimes.HELIXSR.version, homepage=runtimes.HELIXSR_HOMEPAGE,
+                    dlss=runtimes.DLSS_FOR_HELIXSR.version, dlss_url=runtimes.DLSS_FOR_HELIXSR.url,
+                    dlss_license=runtimes.DLSS_LICENSE, accepted=self.model_e_accepted(backend),
+                    built=backend.model_e_built(), gpu_supported=gpu_supported)
+
+    def _model_e_terms(self, backend=None):
+        runtimes = (backend or self.backend).runtimes
+        return {"helixsr": runtimes.HELIXSR.version, "dlss": runtimes.DLSS_FOR_HELIXSR.version}
+
+    def model_e_accepted(self, backend=None):
+        """Whether the user accepted the Model E disclosure for the pinned HelixSR and NVIDIA DLL."""
+        return self.settings.get("model_e_consent") == self._model_e_terms(backend)
+
+    def accept_model_e(self):
+        if not self.backend.supports_model_e():
+            raise ValueError("This Linux package cannot add Model E. Update the launcher first.")
+        self.settings["model_e_consent"] = self._model_e_terms()
+        self.save_settings()
 
     def components(self, game, inspection=None):
         """The saved selection, else what is installed, else the built-in runtime only.
@@ -327,19 +355,28 @@ class Controller:
         saved = self.settings.get("components", {}).get(self.game_key(game))
         if isinstance(saved, dict):
             selection = {"daniel": saved.get("daniel"), "optipatcher": saved.get("optipatcher")}
-            host = saved.get("host")
+            host, model_e = saved.get("host"), saved.get("model_e") is True
         else:
             installed = (inspection or {}).get("components") or {}
             selection = {"daniel": (installed.get("daniel") or {}).get("version"),
                          "optipatcher": (installed.get("optipatcher") or {}).get("version")}
-            host = (installed.get("host") or {}).get("build")
+            host, model_e = (installed.get("host") or {}).get("build"), bool(installed.get("model_e"))
         if host not in (None, "amdnr"):
             selection["host"] = host
+        if model_e:
+            selection["model_e"] = True
         return selection
 
-    def set_components(self, game, daniel=None, optipatcher=None, host=None):
+    def set_components(self, game, daniel=None, optipatcher=None, host=None, model_e=False):
         runtimes = self.backend.runtimes
         host = None if host == "amdnr" else host
+        if model_e:
+            if not self.backend.supports_model_e():
+                raise ValueError("This Linux package cannot add Model E. Update the launcher first.")
+            if host is not None:
+                raise ValueError(f"{self.host_title(host=host)} cannot load Model E; it needs the AMDNR host.")
+            if not self.model_e_accepted():
+                raise ValueError("Read and accept the Model E notice first.")
         if host is not None:
             if not self.backend.supports_host_builds():
                 raise ValueError("This Linux package cannot use another host build. Update the launcher first.")
@@ -357,6 +394,8 @@ class Controller:
         selection = {"daniel": daniel, "optipatcher": optipatcher}
         if host is not None:
             selection["host"] = host
+        if model_e:
+            selection["model_e"] = True
         self.settings.setdefault("components", {})[self.game_key(game)] = selection
         self.save_settings()
         return self.components(game)
@@ -377,7 +416,10 @@ class Controller:
         elif getattr(game, "prefix", None):
             roots.insert(1, game.prefix / "drive_c/windows/system32")
         compiler = self.settings.get("compiler")
-        package = backend.prepare_package(Path(compiler) if compiler else None, roots, components=components)
+        options = {}
+        if (components or {}).get("model_e"):
+            options["accept_dlss_license"] = self.model_e_accepted(backend)
+        package = backend.prepare_package(Path(compiler) if compiler else None, roots, components=components, **options)
         python = persistent_python(self.data_dir)
         if python:
             (package / "amdnr-linux/python-runtime.path").write_text(str(python) + "\n")
@@ -494,6 +536,13 @@ class Controller:
                                  f"{components['daniel']} for this GPU. Choose another neural runtime first.")
         if any(components.values()) and not backend.supports_components():
             raise ValueError("This Linux package cannot add danielblnc's runtime or OptiPatcher. Update the launcher first.")
+        if components.get("model_e"):
+            if not backend.supports_model_e():
+                raise ValueError("This Linux package cannot add Model E. Update the launcher first.")
+            if host:
+                raise ValueError(f"{self.host_title(backend, host)} cannot load Model E; it needs the AMDNR host.")
+            if not self.model_e_accepted(backend) and not backend.model_e_built():
+                raise ValueError("Read and accept the Model E notice before installing it.")
         package = self.prepare(game, backend, components)
         # A host build change also starts OptiScaler.ini afresh, so it gets the first-install settings.
         host_changed = (host or "amdnr") != ((installed.get("components") or {}).get("host") or {}).get("build", "amdnr")
@@ -531,7 +580,8 @@ class Controller:
             with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as output:
                 for name in ("OptiScaler.log", "re2_framework_log.txt", "lmxxf_backend.log", "amd_bridge.log",
                              "amd_presr.log", "dlssnr_on_amd.log", "dlssnr_on_amd.ini", "amdnr_crash.log",
-                             "amdnr-linux/launch.log", "amdnr-linux/components.json", "OptiScaler.ini"):
+                             "amdnr-linux/launch.log", "amdnr-linux/components.json", "OptiScaler.ini",
+                             "AMDNR-SR-E/helixsr.log"):
                     path = game.exe_dir / name
                     if (path.is_file() and not path.is_symlink()
                             and not any(p.is_symlink() for p in path.parents)

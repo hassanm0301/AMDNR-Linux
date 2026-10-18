@@ -24,6 +24,8 @@ class ComponentController(fixtures.FakeController):
         self.saved = []
         self.game_notices = []
         self.offer_hosts = False
+        self.model_e = None
+        self.accepted = []
 
     def inspect(self, directory):
         result = super().inspect(directory)
@@ -38,7 +40,13 @@ class ComponentController(fixtures.FakeController):
                        dict(key="presr", title="OptiScaler AMD pre-SR 1.9.1-alpha", author="TheAutomatic",
                             builtin_runtime=False)],
                 host_runtimes={"amdnr": ["0.6.0", "0.5.1"], "presr": ["0.3.1"]})
+        if self.model_e is not None:
+            result["component_choices"]["model_e"] = dict(self.model_e)
         return result
+
+    def accept_model_e(self):
+        self.accepted.append(True)
+        self.model_e["accepted"] = True
 
     def set_components(self, game, daniel=None, optipatcher=None, **host):
         self.selection = {"daniel": daniel, "optipatcher": optipatcher, **host}
@@ -121,6 +129,46 @@ class ComponentGuiTests(unittest.TestCase):
             self.wait_idle()
         self.assertEqual(self.controller.saved, [{"daniel": "0.3.1", "optipatcher": None, "host": "presr"}])
         self.assertEqual(self.controller.operations, [("install", "12")])
+
+    def test_model_e_shows_its_notice_once_and_is_saved(self):
+        self.controller.model_e = dict(helixsr="1.8.1", homepage="https://github.com/lonewolf0622/HelixSR", dlss="310.7.0",
+                                       dlss_url="fixture", dlss_license="https://github.com/NVIDIA/DLSS/blob/v310.7.0/LICENSE.txt",
+                                       accepted=False, built=False, gpu_supported=True)
+        self.select_first()
+        window = self.window
+        self.assertTrue(window.model_e_check.isVisible())
+        self.assertIn("Model E is HelixSR", window.component_note.text())
+        with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.No) as question:
+            window.model_e_check.setChecked(True)
+        self.assertIn("NVIDIA's licence applies", question.call_args.args[2])
+        self.assertIn("Do not share or upload them", question.call_args.args[2])
+        self.assertFalse(window.model_e_check.isChecked())
+        self.assertEqual(self.controller.accepted, [])
+        with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+            window.model_e_check.setChecked(True)
+        self.assertTrue(window.model_e_check.isChecked())
+        self.assertEqual(self.controller.accepted, [True])
+        window.model_e_check.setChecked(False)
+        with patch.object(QMessageBox, "question") as again:
+            window.model_e_check.setChecked(True)
+        again.assert_not_called()
+        with patch("native_launcher.app.steam.steam_is_running", return_value=False):
+            window.install.click()
+            self.wait_idle()
+        self.assertEqual(self.controller.saved, [{"daniel": None, "optipatcher": None, "model_e": True}])
+
+    def test_model_e_is_not_offered_with_an_alternate_host(self):
+        self.controller.offer_hosts = True
+        self.controller.model_e = dict(helixsr="1.8.1", homepage="h", dlss="310.7.0", dlss_url="u", dlss_license="l",
+                                       accepted=True, built=True, gpu_supported=True)
+        self.select_first()
+        window = self.window
+        self.assertTrue(window.model_e_check.isEnabled())
+        window.model_e_check.setChecked(True)
+        window.host_choice.setCurrentIndex(1)
+        self.assertFalse(window.model_e_check.isEnabled())
+        self.assertIn("It needs the AMDNR host", window.component_note.text())
+        self.assertNotIn("model_e", window.selected_components())
 
     def test_blocking_notice_asks_before_installing(self):
         self.controller.game_notices = [{"level": "confirm", "text": "This game ships BattlEye."},

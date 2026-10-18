@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Exercise the released OptiScaler host through its public NGX entry points.
 // Stage the host/runtime/config in an isolated directory before running this test.
-// Required config: Dx12Upscaler=fsr21; FrameGen/Enabled=false; DLSS/Enabled=false;
+// Required config: Dx12Upscaler=fsr21 or fsr31 (the FFX path Model E replaces); FrameGen/Enabled=false; DLSS/Enabled=false;
 // DlssNr/NrBackend=lmxxf or daniel and DlssNr/Enabled matching the baseline/neural argument.
 // lmxxf needs LmxxfNrRuntime.dll/.pak beside the host; daniel needs danielblnc's
 // dlssnr_amd_pass1..3.dll and dlssnr_on_amd_weights.bin there instead.
@@ -165,7 +165,9 @@ int wmain(int argc, wchar_t **argv)
     std::wstring host_directory = directory(full_path), ini = host_directory + L"\\OptiScaler.ini";
     wchar_t setting[128];
     GetPrivateProfileStringW(L"Upscalers", L"Dx12Upscaler", L"", setting, 128, ini.c_str());
-    if (_wcsicmp(setting, L"fsr21")) { std::fputs("Test requires [Upscalers] Dx12Upscaler=fsr21\n", stderr); return 1; }
+    bool fsr31 = !_wcsicmp(setting, L"fsr31");
+    if (!fsr31 && _wcsicmp(setting, L"fsr21")) { std::fputs("Test requires [Upscalers] Dx12Upscaler=fsr21 or fsr31\n", stderr); return 1; }
+    const char *upscaler = fsr31 ? "FSR3.1" : "FSR2";
     GetPrivateProfileStringW(L"DlssNr", L"Enabled", L"", setting, 128, ini.c_str());
     if (_wcsicmp(setting, neural ? L"true" : L"false")) { std::fputs("DlssNr Enabled must match test mode\n", stderr); return 1; }
     GetPrivateProfileStringW(L"DlssNr", L"NrBackend", L"", setting, 128, ini.c_str());
@@ -347,8 +349,8 @@ int wmain(int argc, wchar_t **argv)
     list->Release(); allocator->Release(); readback->Release(); output->Release();
     for (Texture *texture : {&color, &motion, &depth}) { texture->upload->Release(); texture->resource->Release(); }
     fence->Release(); CloseHandle(event); queue->Release(); device->Release(); adapter->Release(); factory->Release();
-    std::puts(neural ? (daniel ? "PASS: released host NGX/FSR2/danielblnc NR submission and composition produced finite changed output"
-                               : "PASS: released host NGX/FSR2/NR submission and composition produced finite changed output") :
-                       "PASS: released host NGX/FSR2 baseline produced finite output");
+    if (neural) std::printf("PASS: released host NGX/%s/%sNR submission and composition produced finite changed output\n",
+                            upscaler, daniel ? "danielblnc " : "");
+    else std::printf("PASS: released host NGX/%s baseline produced finite output\n", upscaler);
     return 0;
 }

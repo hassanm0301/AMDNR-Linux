@@ -125,15 +125,16 @@ def _components(value):
     """Validate a package or record component description; old ones mean lmxxf only.
 
     An optional "host" entry names an alternate host build; without it the
-    package uses the AMDNR host, so AMDNR descriptions stay unchanged.
+    package uses the AMDNR host, so AMDNR descriptions stay unchanged. An
+    optional "model_e" entry describes a Model E built on this PC.
     """
     if value is None:
         return dict(_default_components)
-    if (not isinstance(value, dict) or set(value) - {"host"} != set(_default_components) or
+    if (not isinstance(value, dict) or set(value) - {"host", "model_e"} != set(_default_components) or
             value["neural_runtime"] not in ("lmxxf", "daniel") or
             (value["neural_runtime"] == "daniel") != isinstance(value["daniel"], dict)):
         raise ValueError("invalid optional component metadata")
-    for name in ("daniel", "optipatcher", "host"):
+    for name in ("daniel", "optipatcher", "host", "model_e"):
         item = value.get(name)
         if item is not None and (not isinstance(item, dict) or not isinstance(item.get("version"), str) or
                                  not re.fullmatch(r"[0-9a-f]{64}", item.get("sha256", ""))):
@@ -142,6 +143,8 @@ def _components(value):
                             not re.fullmatch(r"[a-z][a-z0-9]{0,15}", value["host"].get("build", "")) or
                             value["host"]["build"] == "amdnr"):
         raise ValueError("invalid host component metadata")
+    if "model_e" in value and (value["model_e"] is None or "host" in value):
+        raise ValueError("invalid model_e component metadata")
     return value
 
 
@@ -567,16 +570,31 @@ class LauncherBackend:
         """Whether this release can stage an alternate host build instead of AMDNR."""
         return "host" in signature_inspect.signature(self.setup.prepare).parameters and hasattr(self.runtimes, "HOST_BUILDS")
 
-    def prepare_package(self, compiler=None, search_roots=None, archive=None, components=None):
+    def supports_model_e(self):
+        """Whether this release can build and stage Model E (HelixSR)."""
+        return ("model_e" in signature_inspect.signature(self.setup.prepare).parameters
+                and hasattr(self.runtimes, "build_model_e"))
+
+    def model_e_built(self):
+        """Whether a Model E built earlier is ready in this launcher's download cache."""
+        return self.supports_model_e() and self.runtimes.model_e_build(self.cache_dir / "downloads") is not None
+
+    def prepare_package(self, compiler=None, search_roots=None, archive=None, components=None, accept_dlss_license=False):
         """components: {"daniel": version or None, "optipatcher": version or None,
-        "host": an alternate host build key, or None/"amdnr" for AMDNR}."""
+        "host": an alternate host build key, or None/"amdnr" for AMDNR,
+        "model_e": True to build and stage Model E}. accept_dlss_license
+        records that the user accepted NVIDIA's licence for Model E's build."""
         options = {key: value for key, value in (components or {}).items() if value and value != "amdnr"}
-        if set(options) - {"daniel", "optipatcher", "host"}:
+        if set(options) - {"daniel", "optipatcher", "host", "model_e"}:
             raise BackendError("Unknown optional component.")
         if options and not self.supports_components():
             raise BackendError("This Linux package cannot add danielblnc's runtime or OptiPatcher. Update the launcher first.")
         if "host" in options and not self.supports_host_builds():
             raise BackendError("This Linux package cannot use another host build. Update the launcher first.")
+        if "model_e" in options:
+            if not self.supports_model_e():
+                raise BackendError("This Linux package cannot add Model E. Update the launcher first.")
+            options.update(model_e=True, accept_dlss_license=bool(accept_dlss_license), progress=self.progress)
         self.progress("Finding a native shader compiler…")
         compiler = self._find_compiler(compiler, search_roots or [])
         self.progress("Verifying the release and preparing pinned runtime files…")
@@ -631,6 +649,16 @@ class LauncherBackend:
         if bool(plugin) != bool(components["optipatcher"]) or (
                 plugin and plugin["sha256"] != components["optipatcher"]["sha256"]):
             raise ConflictError("The prepared package's OptiPatcher plugin does not match its description.")
+        folder = getattr(self.runtimes, "MODEL_E_FOLDER", "AMDNR-SR-E")
+        provider = [name for name in files if name.split("/")[0] == folder]
+        if components.get("model_e"):
+            dlls = getattr(self.runtimes, "MODEL_E_DLLS", ())
+            receipt = files.get(f"{folder}/{getattr(self.runtimes, 'MODEL_E_RECEIPT', '')}")
+            if (not dlls or not receipt or any(files.get(f"{folder}/{name}", {}).get("sha256") != components["model_e"]["sha256"]
+                                               for name in dlls)):
+                raise ConflictError("The prepared package's Model E files do not match its description.")
+        elif provider:
+            raise ConflictError("The prepared package has undeclared Model E files.")
         return components
 
     def _prefix_entries(self, game):
@@ -941,6 +969,11 @@ class LauncherBackend:
             if bool(components["optipatcher"]) != bool(before["optipatcher"]):
                 default = ini_value(Path(source["source"]).read_bytes(), "Plugins", "LoadAsiPlugins") or "auto"
                 settings[("Plugins", "LoadAsiPlugins")] = "true" if components["optipatcher"] else default
+            if bool(components.get("model_e")) != bool(before.get("model_e")):
+                # Model E is AMDNR's FFX provider choice; without it the game's own FSR provider runs.
+                settings[("Upscalers", "FfxSRProvider")] = "helix_e" if components.get("model_e") else "auto"
+                settings[("Libraries", "HelixSRPath")] = (getattr(self.runtimes, "MODEL_E_FOLDER", "AMDNR-SR-E")
+                                                          if components.get("model_e") else "")
             if not settings:
                 return
             data = ini_with(current, settings)
