@@ -50,12 +50,12 @@ structure and copyright notices.
 | OptiPatcher plugin, optional | From the OptiScaler project's OptiPatcher GitHub releases, downloaded unchanged when chosen and checked against a pinned digest. Not republished by this fork. |
 | "OptiScaler AMD pre-SR" 1.9.1-alpha host, optional | An independent GPL-3.0 OptiScaler fork by TheAutomatic, https://github.com/TheAutomatic/dlss-5-amd-project. Setup downloads `OptiScaler-AMD-PreSR-1.9.1-alpha.zip` (SHA-256 `bc0799ee408f50a0766f250118022a6c030f46a3d2bf75e9715266ad2a3c247a`) unchanged from that project's release only when the user chooses it, and keeps its `Licenses/` directory. Its corresponding source is in that repository at tag `v1.9.1-alpha`. Not republished by this fork. |
 
-The tested AMDNR archive is `AMDNR-v0.3.5.5R4.zip`, SHA-256
-`725cef9da0608621fe3233a7127e6511b9543061fcecaba8348b2c55c608d448`.
+The pinned AMDNR archive is `AMDNR-v0.3.5.6.zip`, SHA-256
+`e7ffc09696f1a4e06d26dc0c228d15a9c74a0e56e3d24be6a130a0f5e49968d8`.
 Its `Licenses/AMDNR_NOTICE.txt` identifies the host as GPL-3.0 with additional
 attribution terms, and says that source for that release will be published with
 AMDNR 0.5.0. The older host source in this fork is not represented as the
-corresponding source for the downloaded 0.3.5.5R4 binaries.
+corresponding source for the downloaded 0.3.5.6 binaries.
 
 The upstream notice credits **lmxxf / Kien** for the MIT-licensed port, kernels
 and runtime contributions. It separately identifies **NVIDIA** as the owner

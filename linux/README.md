@@ -20,9 +20,9 @@ release (the folder containing `RELEASE-MANIFEST.json`), run:
 
 ```sh
 python3 linux/build-native-launcher.py \
-  --release-root /path/to/AMDNR-Linux-v0.3.0-preview \
-  --version 0.3.0-preview \
-  --output linux/build/AMDNR-Linux-Manager-v0.3.0-preview-x86_64.AppImage
+  --release-root /path/to/AMDNR-Linux-v0.3.1-preview \
+  --version 0.3.1-preview \
+  --output linux/build/AMDNR-Linux-Manager-v0.3.1-preview-x86_64.AppImage
 ```
 
 This packages the same Python, Qt, addon, notices and corresponding Qt source as
@@ -33,7 +33,7 @@ does not download an unpinned runtime. Building does not require FUSE. The exist
 stable builds require matching manifest and app versions.
 
 Make the resulting AppImage executable and open it. On systems without usable
-FUSE, run `./AMDNR-Linux-Manager-v0.3.0-preview-x86_64.AppImage --appimage-extract-and-run`.
+FUSE, run `./AMDNR-Linux-Manager-v0.3.1-preview-x86_64.AppImage --appimage-extract-and-run`.
 Host requirements remain glibc 2.34+, the GCC 11 C++ runtime, and an X11/Wayland
 desktop with graphics drivers. Settings, downloads and the persistent game Python
 runtime stay in the same user data/cache directories used by portable releases.
@@ -58,7 +58,7 @@ binaries, not a rebuilt host.
 
 The development branch also contains host-source fixes for GPU resource lifetime
 on resize/device removal and optional statistics allocation. These require a
-separate Windows host rebuild and are **not active in the prebuilt 0.3.5.5R4 host**.
+separate Windows host rebuild and are **not active in the prebuilt 0.3.5.6 host**.
 Their CPU/compiler checks are described in
 [`main/AMDNR-source/tests/README.md`](../main/AMDNR-source/tests/README.md).
 
@@ -94,7 +94,7 @@ Run from the repository root:
 ./linux/build-vkd3d.sh
 ./linux/fetch-rocm.py linux/build/rocm
 ./linux/manage.py stage \
-  --archive /path/to/AMDNR-v0.3.5.5R4.zip \
+  --archive /path/to/AMDNR-v0.3.5.6.zip \
   --compiler /path/to/your/game/d3dcompiler_47.dll \
   --rocm linux/build/rocm \
   --output linux/build/package
@@ -106,6 +106,12 @@ The stage command accepts these checksum-pinned upstream archives:
 | --- | --- |
 | [0.3.4.2](https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha0.3.4.2/AMDNR-v0.3.4.2.zip) | `013081a3a225ef927d96d8996b64910d62f796022b20bef6a6ea102670b0cb63` |
 | [0.3.5.5R4](https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha0.3.5.5R4/AMDNR-v0.3.5.5R4.zip) | `725cef9da0608621fe3233a7127e6511b9543061fcecaba8348b2c55c608d448` |
+| [0.3.5.6](https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha0.3.5.6/AMDNR-v0.3.5.6.zip) | `e7ffc09696f1a4e06d26dc0c228d15a9c74a0e56e3d24be6a130a0f5e49968d8` |
+
+`setup.py` and the manager download 0.3.5.6. Its archive has the same files as
+0.3.5.5R4 and an identical `OptiScaler.ini`; the host, the lmxxf runtime, its
+kernel pack and upstream's documents and notice change. The game results below were recorded with 0.3.4.2
+and 0.3.5.5R4; 0.3.5.6 passes the automated GPU suite but has no game report yet.
 
 It keeps each release's host, runtime, and model together, enables lmxxf neural
 rendering in `OptiScaler.ini`, and stages the bridge, patched graphics DLLs,
@@ -136,19 +142,19 @@ its GitHub release, verified, placed in `OptiScaler/plugins/` and enabled with
 ```sh
 ./linux/setup.py prepare --compiler /path/to/d3dcompiler_47.dll \
   --daniel-runtime 0.6.0 --optipatcher
-./linux/manage.py stage --archive AMDNR-v0.3.5.5R4.zip --compiler d3dcompiler_47.dll \
+./linux/manage.py stage --archive AMDNR-v0.3.5.6.zip --compiler d3dcompiler_47.dll \
   --rocm linux/build/rocm --output linux/build/package \
   --daniel-runtime v0.6.0-Runtime.zip --optipatcher OptiPatcher_v0.41.asi
 ```
 
 | danielblnc | Archive SHA-256 | Pass DLL SHA-256 | GPUs offered | Hosts |
 | --- | --- | --- | --- | --- |
-| 0.6.0 | `d2bb1702…351f7e` | `195c4a89…775721` | RDNA 4, 3, 2 | 0.3.5.5R4 |
-| 0.5.1 | `ed4c4deb…129292` | `493b4a3b…48acd` | RDNA 4, 3 | 0.3.5.5R4 |
-| 0.5.0 | `7a49ab0e…e56ed46f` | `cddfb09e…aec31a` | RDNA 4, 3 | both |
-| 0.4.3 | `07dd7774…4b231e` | `d1e32086…a67a457` | RDNA 4, 3 | both |
-| 0.4.1 | `d6aa1ff2…e4d492` | `823063eb…b1d376` | RDNA 4, 3 | both |
-| 0.4.0 | `15ebed60…5b973` | `d62be3d8…798b80` | RDNA 4, 3 | both |
+| 0.6.0 | `d2bb1702…351f7e` | `195c4a89…775721` | RDNA 4, 3, 2 | 0.3.5.5R4, 0.3.5.6 |
+| 0.5.1 | `ed4c4deb…129292` | `493b4a3b…48acd` | RDNA 4, 3 | 0.3.5.5R4, 0.3.5.6 |
+| 0.5.0 | `7a49ab0e…e56ed46f` | `cddfb09e…aec31a` | RDNA 4, 3 | all three |
+| 0.4.3 | `07dd7774…4b231e` | `d1e32086…a67a457` | RDNA 4, 3 | all three |
+| 0.4.1 | `d6aa1ff2…e4d492` | `823063eb…b1d376` | RDNA 4, 3 | all three |
+| 0.4.0 | `15ebed60…5b973` | `d62be3d8…798b80` | RDNA 4, 3 | all three |
 
 Full digests are in `linux/runtimes.py`. The AMDNR host pins the SHA-256 of every
 pass DLL it can drive, so staging reads compatibility from the host binary itself
@@ -337,6 +343,12 @@ It omits local paths and does not carry earlier gameplay claims onto a new build
 Recorded passing configuration: Arch Linux, RX 9070 XT, GE-Proton11-9,
 private ROCm 7.2.4, AMDNR 0.3.4.2 and 0.3.5.5R4 (60 neural frames each),
 and the pinned patched vkd3d-proton.
+AMDNR 0.3.5.6 passed the complete suite three times in a row under
+Proton-Wineland 11.0 (2026-09-30) on the same card, with the bridge unchanged
+from v0.3.0-preview: in each 720-frame host run lmxxf composed 597 fresh outputs
+in a 599-frame reporting window (mean absolute RGB change 0.0256 from the NR-off
+baseline), danielblnc 0.6.0 completed every pass (700–717) with no timeouts, and
+OptiPatcher loaded.
 The 0.3.5.5R4 runtime also passes 120 frames at 1720x720 with the full network,
 temporal history, and runtime controls enabled. The concurrent exception test
 reproduces a failure without the signal guard and passes with it.
@@ -446,8 +458,8 @@ external memory/semaphore handle type.
 | Per-game DLL name rules, mod-loader protection | Automatic selection skips occupied names; Cyberpunk 2077 prefers `wininet.dll`, Marvel's Spider-Man `dbghelp.dll`. `dxgi`/`d3d11`/`d3d12` stay reserved for DXVK/vkd3d. |
 | Unsupported-game notices, anti-cheat and conflict checks, route notes | Shown before installing; blocking cases ask for confirmation. First-install INI seeds: GTA V Enhanced `Spoofing Dxgi=false`, RE9 `Menu OverlayMenu=false`. |
 | Collect logs | Save logs adds `amd_presr.log`, `dlssnr_on_amd.log/.ini`, `amdnr_crash.log` and the component list. |
-| AMDNR hosts 0.3.4.2 and 0.3.5.5R4 | Supported. Older hosts are not pinned. 0.3.5.6 is not pinned yet: as of 2026-10-18 its GitHub asset (`e7ffc096…`, 753,230,845 bytes) is still not the archive upstream's own manifest pins (`44ef8b2e…`, 753,231,620 bytes). Its host drives the same danielblnc runtimes as 0.3.5.5R4, and its lmxxf runtime needs no further bridge exports. |
-| Model E (HelixSR by lonewolf0622), new in 0.3.5.6 | Not yet; it needs the 0.3.5.6 host. HelixSR runs as D3D12 compute shaders without HIP, and its author develops it on Proton, so it would run through vkd3d-proton rather than the bridge. HelixSR's own setup has to build its network on the user's PC from NVIDIA's DLSS DLL (Python 3 with numpy; the shader compiler runs through Proton). |
+| AMDNR hosts 0.3.4.2, 0.3.5.5R4 and 0.3.5.6 | Supported; 0.3.5.6 is the default. Older hosts are not pinned. 0.3.5.6 is pinned to its GitHub release asset (`e7ffc096…`, 753,230,845 bytes), which upstream's manifest now names too. Its host drives the same danielblnc runtimes as 0.3.5.5R4, and its lmxxf runtime needs no further bridge exports. |
+| Model E (HelixSR by lonewolf0622), new in 0.3.5.6 | Not in this release. HelixSR runs as D3D12 compute shaders without HIP, and its author develops it on Proton, so it would run through vkd3d-proton rather than the bridge. Its network has to be built on the user's PC by HelixSR's own setup scripts from NVIDIA's DLSS DLL (Python 3 with numpy; Microsoft's Windows shader compiler through Wine). The 0.3.5.6 host then loads it from `[Libraries] HelixSRPath` with `[Upscalers] FfxSRProvider=helix_e`, only after a receipt beside the two provider DLLs matches their SHA-256. |
 | Model L (d4r by countervolts), new in 0.3.5.6 | Not supported. d4r 0.1.4's Windows package ships its own Windows HIP 7.17 runtime, which needs AMD's Windows kernel driver, and the 0.3.5.6 host loads that copy from d4r's folder by full path. The bridge's `amdhip64_7.dll` cannot stand in: d4r's ZLUDA `nvcuda.dll` imports 99 HIP functions and the bridge exports 39 of them. The missing ones include texture and surface objects, arrays, synchronous copies and fills, occupancy queries and graph updates. d4r's own Linux build needs its patched vkd3d-proton as the game's `d3d12.dll`, which this fork already replaces with its own. |
 | nvngx.dll_dlssnr.dll forwarder | Not applicable: it only serves NVIDIA's own DLSS-NR snippet. |
 | AMDNR Anywhere (Magpie capture host) | Not supported: it depends on Windows window capture that Wine/DXVK do not implement. |

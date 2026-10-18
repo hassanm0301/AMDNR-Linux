@@ -1,3 +1,53 @@
+# Linux v0.3.1-preview — AMDNR 0.3.5.6 host
+
+Development **pre-release**. The manager and `setup.py` now install upstream
+**AMDNR 0.3.5.6**. The Linux bridge and patched graphics binaries are the same
+files as in v0.3.0-preview; only the pinned host/runtime and the Python tools
+change. No game has been played with 0.3.5.6 on Linux yet.
+
+## New
+
+- **AMDNR 0.3.5.6 is the default host.** It is pinned to the archive on
+  upstream's GitHub release (`AMDNR-v0.3.5.6.zip`, SHA-256 `e7ffc096…49968d8`,
+  753,230,845 bytes), which upstream's own manifest now names too. Its archive
+  has the same files as 0.3.5.5R4 and an identical `OptiScaler.ini`; the host,
+  the lmxxf runtime, its kernel pack and upstream's documents and notice change. See upstream's changelog for what
+  0.3.5.6 changes in-game (Full Model Look by default, extra face detail, less
+  lmxxf ghosting, the danielblnc "timeout" fix, a smaller default network on
+  RX 7000 and handhelds, new menu rows).
+- The 0.3.5.6 host pins the same danielblnc pass digests as 0.3.5.5R4, so the
+  manager keeps offering danielblnc 0.4.0–0.6.0 with it.
+- **Update** in the manager moves an installed game from 0.3.5.5R4 to 0.3.5.6
+  and keeps the game's `OptiScaler.ini`, including your own edits.
+- 0.3.5.5R4 and 0.3.4.2 archives are still accepted by `manage.py stage`.
+
+## Validation
+
+The complete GPU suite passed three times in a row under Proton-Wineland 11.0
+(2026-09-30) on RX 9070 XT with the 0.3.5.6 package: the released host under its
+hooks; the 720-frame NR-off/on host pipeline with lmxxf (597 fresh composed
+outputs in a 599-frame reporting window, mean absolute RGB change 0.0256 from the
+NR-off image); a third host run with danielblnc 0.6.0 (700–717 passes, no
+timeouts, mean absolute change 0.0208); and OptiPatcher 0.41 loading from
+`OptiScaler/plugins`. The only skip is Wineland's known shared-fence rewind
+limitation. All 306 Linux unit tests pass. The real 0.3.5.6 package completed
+install and uninstall in a temporary game folder through `manage.py`, and an
+install of the v0.3.0-preview package (0.3.5.5R4) updated to it through the
+manager's backend and uninstalled cleanly.
+
+These are synthetic API and pipeline checks. No new game compatibility or
+long-duration gameplay stability is claimed.
+
+## Not included
+
+- **Model E** (HelixSR by lonewolf0622), new in 0.3.5.6. HelixSR's network has
+  to be built on each user's PC by HelixSR's own setup scripts from NVIDIA's
+  DLSS DLL; this release does not do that yet.
+- **Model L** (d4r by countervolts): it needs HIP/ZLUDA functions the bridge
+  does not provide.
+- AMDNR Anywhere (needs Windows window capture) and the NVIDIA-only
+  `nvngx.dll_dlssnr.dll` forwarder.
+
 # Linux v0.3.0-preview — danielblnc runtime, pre-SR host, Heroic and Lutris
 
 Development **pre-release**. It adds the remaining runtime choices and game

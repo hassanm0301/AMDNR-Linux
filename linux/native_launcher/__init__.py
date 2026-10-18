@@ -1,4 +1,4 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Independent native Linux frontend for this fork's ROCm bridge."""
-VERSION = "0.3.0-preview"
+VERSION = "0.3.1-preview"
 NAME = "AMDNR Linux Manager"

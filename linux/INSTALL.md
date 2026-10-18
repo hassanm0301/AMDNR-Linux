@@ -12,7 +12,7 @@ executing file as program** in its properties and open it. From a terminal:
 
 ```sh
 chmod +x AMDNR-Linux-Manager-*.AppImage
-./AMDNR-Linux-Manager-v0.3.0-preview-x86_64.AppImage
+./AMDNR-Linux-Manager-v0.3.1-preview-x86_64.AppImage
 ```
 
 If the system cannot mount AppImages through FUSE, add
@@ -306,7 +306,7 @@ contains the native portable app, the smaller `AMDNR-Linux-v0.2.1.tar.gz` addon 
 `SHA256SUMS`. GitHub's automatic “Source code” archives do not include the prebuilt
 bridge binaries. Optional integrity check: `sha256sum --ignore-missing -c SHA256SUMS`.
 
-The app downloads AMDNR 0.3.5.5R4 and ROCm 7.2.4 directly from their publishers,
+The app downloads AMDNR 0.3.5.6 (0.3.5.5R4 before v0.3.1-preview) and ROCm 7.2.4 directly from their publishers,
 checks their pinned hashes, and extracts a private runtime. It does not install
 system packages, change drivers, or run package installation scripts. Those
 components retain their own terms. The native download includes editable launcher

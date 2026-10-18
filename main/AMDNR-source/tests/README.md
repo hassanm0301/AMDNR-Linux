@@ -14,7 +14,7 @@ compiled against its Windows and D3D12 declarations. The resize check ensures
 failed synchronization exits before texture replacement or temporal preparation.
 
 These are local modifications to the **0.3.4.2 corresponding-source snapshot**.
-They do not modify or replace the packaged **0.3.5.5R4 OptiScaler.dll**. The full
+They do not modify or replace the packaged **0.3.5.6 OptiScaler.dll**. The full
 host still needs a Windows/MSVC build and in-game validation before deployment;
 passing these isolated checks does not constitute a full host build or prove an
 FPS improvement.
