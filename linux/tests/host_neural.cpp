@@ -2,7 +2,9 @@
 // Exercise the released OptiScaler host through its public NGX entry points.
 // Stage the host/runtime/config in an isolated directory before running this test.
 // Required config: Dx12Upscaler=fsr21; FrameGen/Enabled=false; DLSS/Enabled=false;
-// DlssNr/NrBackend=lmxxf and DlssNr/Enabled matching the baseline/neural argument.
+// DlssNr/NrBackend=lmxxf or daniel and DlssNr/Enabled matching the baseline/neural argument.
+// lmxxf needs LmxxfNrRuntime.dll/.pak beside the host; daniel needs danielblnc's
+// dlssnr_amd_pass1..3.dll and dlssnr_on_amd_weights.bin there instead.
 // Run baseline and neural in separate processes with the same remaining settings.
 #include <windows.h>
 #include <d3d12.h>
@@ -64,6 +66,17 @@ static std::string fresh_log(const std::wstring &path, uint64_t start) {
     while ((n = std::fread(data, 1, sizeof(data), file))) text.append(data, n);
     std::fclose(file);
     return text;
+}
+// The released host identifies the GPU on its own thread right after loading. That
+// thread creates a DXGI factory under a lock the app's first factory creation also
+// reaches through the host's Vulkan hooks, and under DXVK the two can deadlock. Games
+// start graphics later than this test; wait for the identification (Amdxc64Hooks on AMD).
+static bool wait_for_log(const std::wstring &path, const char *marker, DWORD timeout_ms) {
+    for (DWORD waited = 0; waited < timeout_ms; waited += 50) {
+        if (fresh_log(path, 0).find(marker) != std::string::npos) return true;
+        Sleep(50);
+    }
+    return false;
 }
 static unsigned counter_max(const std::string &text, const char *key) {
     unsigned maximum = 0; size_t at = 0;
@@ -155,17 +168,28 @@ int wmain(int argc, wchar_t **argv)
     if (_wcsicmp(setting, L"fsr21")) { std::fputs("Test requires [Upscalers] Dx12Upscaler=fsr21\n", stderr); return 1; }
     GetPrivateProfileStringW(L"DlssNr", L"Enabled", L"", setting, 128, ini.c_str());
     if (_wcsicmp(setting, neural ? L"true" : L"false")) { std::fputs("DlssNr Enabled must match test mode\n", stderr); return 1; }
-    std::wstring backend_log = host_directory + L"\\lmxxf_backend.log", bridge_log = host_directory + L"\\amd_bridge.log";
+    GetPrivateProfileStringW(L"DlssNr", L"NrBackend", L"", setting, 128, ini.c_str());
+    bool daniel = !_wcsicmp(setting, L"daniel");
+    if (!daniel && _wcsicmp(setting, L"lmxxf")) { std::fputs("Test requires [DlssNr] NrBackend=lmxxf or daniel\n", stderr); return 1; }
+    // danielblnc's runtime is hosted by the pre-SR path, which logs completed jobs to amd_presr.log.
+    std::wstring backend_log = host_directory + (daniel ? L"\\amd_presr.log" : L"\\lmxxf_backend.log"),
+                 bridge_log = host_directory + L"\\amd_bridge.log";
     uint64_t backend_start = file_size(backend_log), bridge_start = file_size(bridge_log);
-    std::puts("Loading released host");
+    std::printf("Loading released host (runtime %s)\n", daniel ? "daniel" : "lmxxf");
     HMODULE host = LoadLibraryW(full_path);
     if (!host) { std::fprintf(stderr, "host load failed: %lu\n", GetLastError()); return 1; }
     std::puts("Released host loaded");
     // Match the separately validated host/runtime load order without invoking
     // the neural API directly: all rendering below still enters through NGX.
-    std::puts("Loading neural runtime dependency");
-    if (!LoadLibraryW((host_directory + L"\\LmxxfNrRuntime.dll").c_str())) {
-        std::fprintf(stderr, "runtime load failed: %lu\n", GetLastError()); return 1;
+    // The host loads danielblnc's pass DLLs itself, after selecting its HIP device.
+    if (!daniel) {
+        std::puts("Loading neural runtime dependency");
+        if (!LoadLibraryW((host_directory + L"\\LmxxfNrRuntime.dll").c_str())) {
+            std::fprintf(stderr, "runtime load failed: %lu\n", GetLastError()); return 1;
+        }
+    }
+    if (!wait_for_log(host_directory + L"\\OptiScaler.log", "Amdxc64Hooks::Init", 20000)) {
+        std::fputs("Host GPU identification did not finish; inspect OptiScaler.log\n", stderr); return 1;
     }
     // Use the application's ordinary DXGI import, as games do. The loaded host
     // attaches its factory/swapchain hooks; its proxy export is not an application API.
@@ -295,10 +319,17 @@ int wmain(int argc, wchar_t **argv)
     NGX(ngx.release(feature)); NGX(ngx.destroy_parameters(parameters)); NGX(ngx.shutdown(device)); drain();
     std::string backend = fresh_log(backend_log, backend_start), bridge = fresh_log(bridge_log, bridge_start);
     unsigned model = counter_max(backend, " | model +"), fresh = counter_max(backend, "(fresh +");
+    if (daniel) {
+        // Completed jobs are logged for the first three frames and every 120th.
+        model = fresh = 0;
+        for (size_t at = 0; (at = backend.find("Completed AMD pre-SR passes=", at)) != std::string::npos; at++) model++;
+        fresh = counter_max(backend, "Completed AMD pre-SR passes=");
+    }
     std::printf("Host output mean=%g; fresh backend log bytes=%zu bridge bytes=%zu model_window=%u fresh_window=%u\n",
                 sum / values.size(), backend.size(), bridge.size(), model, fresh);
     if (neural) {
-        if (!model || !fresh) { std::fputs("No fresh host log counters prove neural frames reached composition; inspect amd_bridge.log and lmxxf_backend.log\n", stderr); return 1; }
+        if (!model || !fresh) { std::fputs(daniel ? "No fresh completed danielblnc jobs in amd_presr.log; inspect it and amd_bridge.log\n"
+                                                  : "No fresh host log counters prove neural frames reached composition; inspect amd_bridge.log and lmxxf_backend.log\n", stderr); return 1; }
         FILE *reference = _wfopen(argv[4], L"rb"); if (!reference) { std::fputs("Missing baseline output\n", stderr); return 1; }
         std::vector<float> baseline(values.size());
         bool valid = std::fread(baseline.data(), sizeof(float), baseline.size(), reference) == baseline.size() && std::fgetc(reference) == EOF;
@@ -316,7 +347,8 @@ int wmain(int argc, wchar_t **argv)
     list->Release(); allocator->Release(); readback->Release(); output->Release();
     for (Texture *texture : {&color, &motion, &depth}) { texture->upload->Release(); texture->resource->Release(); }
     fence->Release(); CloseHandle(event); queue->Release(); device->Release(); adapter->Release(); factory->Release();
-    std::puts(neural ? "PASS: released host NGX/FSR2/NR submission and composition produced finite changed output" :
+    std::puts(neural ? (daniel ? "PASS: released host NGX/FSR2/danielblnc NR submission and composition produced finite changed output"
+                               : "PASS: released host NGX/FSR2/NR submission and composition produced finite changed output") :
                        "PASS: released host NGX/FSR2 baseline produced finite output");
     return 0;
 }

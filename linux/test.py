@@ -16,6 +16,8 @@ import time
 from launch import environment, prepare_prefix, restore_prefixes
 
 ROOT = Path(__file__).resolve().parent
+DANIEL_FILES = ("dlssnr_amd_pass1.dll", "dlssnr_amd_pass2.dll", "dlssnr_amd_pass3.dll", "dlssnr_on_amd_weights.bin")
+LMXXF_FILES = ("LmxxfNrRuntime.dll", "LmxxfNrRuntime.pak")
 OPTIMIZATION_ENVIRONMENT = ("AMDNR_L37", "AMDNR_L39", "AMDNR_L41", "AMDNR_C32W",
                             "AMDNR_FASTK", "AMDNR_FAST_HISTORY", "AMDNR_LOOSE_ASSETS",
                             "AMDNR_HIP_TRACE", "AMDNR_SIGNAL_TRACE")
@@ -114,7 +116,14 @@ def main():
                         help="Also run inference with the released OptiScaler graphics hooks and GPU spoofing")
     parser.add_argument("--host-pipeline", action="store_true",
                         help="Also compare NR off/on through the released host's full NGX/FSR2 pipeline")
+    parser.add_argument("--daniel-runtime", type=Path,
+                        help="Folder with danielblnc's dlssnr_amd_pass1..3.dll and dlssnr_on_amd_weights.bin; "
+                             "adds a host-pipeline run with NrBackend=daniel (implies --host-pipeline)")
+    parser.add_argument("--optipatcher", type=Path, metavar="ASI",
+                        help="OptiPatcher plugin; host runs load it from OptiScaler/plugins and must log it (implies --host-pipeline)")
     args = parser.parse_args()
+    if args.daniel_runtime or args.optipatcher:
+        args.host_pipeline = True
     if not 3 <= args.frames <= 10000:
         parser.error("--frames must be between 3 and 10000")
     if args.benchmark and args.frames < 30:
@@ -122,6 +131,21 @@ def main():
     if not 64 <= args.width <= 1920 or not 64 <= args.height <= 1080:
         parser.error("Image size must be between 64x64 and 1920x1080")
     package, build, work, proton = (p.resolve() for p in (args.package, args.build, args.output, args.proton))
+    # Alternate host packages (pre-SR) carry no lmxxf runtime; they are tested with danielblnc's.
+    args.lmxxf = all((package / name).is_file() for name in LMXXF_FILES)
+    if not args.lmxxf and args.with_host:
+        parser.error("--with-host needs a package with the lmxxf runtime")
+    if not args.lmxxf and args.host_pipeline and not args.daniel_runtime:
+        parser.error("This package has no lmxxf runtime; --host-pipeline needs --daniel-runtime")
+    if args.daniel_runtime:
+        args.daniel_runtime = args.daniel_runtime.resolve()
+        missing = [name for name in DANIEL_FILES if not (args.daniel_runtime / name).is_file()]
+        if missing:
+            parser.error("--daniel-runtime is missing " + ", ".join(missing))
+    if args.optipatcher:
+        args.optipatcher = args.optipatcher.resolve()
+        if not args.optipatcher.is_file():
+            parser.error("--optipatcher must name the plugin file")
     work.mkdir(parents=True, exist_ok=True)
     # A second run in the same directory must not replace evidence or restore
     # prefix files while the first run still owns that isolated environment.
@@ -168,7 +192,8 @@ def run_suite(args, package, build, work, proton):
     try:
         if not (args.with_host or args.host_pipeline) and any(
                 (work / name).exists() or (work / name).is_symlink()
-                for name in ("winmm.dll", "LmxxfNrRuntime.dll", "LmxxfNrRuntime.pak", "OptiScaler.ini", "OptiScaler")):
+                for name in ("winmm.dll", "LmxxfNrRuntime.dll", "LmxxfNrRuntime.pak", "OptiScaler.ini", "OptiScaler",
+                             *DANIEL_FILES)):
             raise ValueError("This output directory contains host-test fixtures. Use a fresh --output for tests without the host.")
         bundle = work / "amdnr-linux"
         if bundle.exists():
@@ -181,26 +206,43 @@ def run_suite(args, package, build, work, proton):
         for name in ("d3d12.dll", "d3d12core.dll", "d3dcompiler_47.dll"):
             shutil.copy2(package / name, work / name)
         if args.with_host or args.host_pipeline:
-            for name in ("winmm.dll", "LmxxfNrRuntime.dll", "LmxxfNrRuntime.pak"):
+            for name in ("winmm.dll", *(LMXXF_FILES if args.lmxxf else ())):
                 shutil.copy2(package / name, work / name)
-            shutil.copytree(package / "OptiScaler", work / "OptiScaler", dirs_exist_ok=True)
+            for folder in ("OptiScaler", "experimental_lighting"):
+                if (package / folder).is_dir():
+                    shutil.copytree(package / folder, work / folder, dirs_exist_ok=True)
+            # An explicit NrBackend selects the runtime, so both sets can share the folder.
+            for name in DANIEL_FILES if args.daniel_runtime else ():
+                shutil.copy2(args.daniel_runtime / name, work / name)
             # Configure only the isolated test copy; force the paths that games use
             # even though the harness has no NGX library for host autodetection.
             settings = {("Log", "LogToFile"): "true", ("Log", "LogLevel"): "1",
                         ("Menu", "OverlayMenu"): "true", ("Spoofing", "Dxgi"): "true",
                         ("Spoofing", "Vulkan"): "true", ("Hotfix", "CheckForUpdate"): "false"}
+            if args.optipatcher:
+                (work / "OptiScaler/plugins").mkdir(parents=True, exist_ok=True)
+                shutil.copy2(args.optipatcher, work / "OptiScaler/plugins/OptiPatcher.asi")
+                settings[("Plugins", "LoadAsiPlugins")] = "true"
             host_config(package / "OptiScaler.ini", work / "OptiScaler.ini", settings)
-        for name in ("syscall_dispatch.exe", "hip_smoke.exe", "exception_smoke.exe", "exception_context.exe", "compute.hsaco", "d3d12_interop.exe", "neural_smoke.exe", "host_shaders.exe"):
+        for name in ("syscall_dispatch.exe", "hip_smoke.exe", "exception_smoke.exe", "exception_context.exe", "compute.hsaco",
+                     "hip_registration.exe", "hip_registration_module.dll", "registered.hipfb",
+                     "d3d12_interop.exe", "neural_smoke.exe", "host_shaders.exe"):
             shutil.copy2(build / name, work / name)
         if args.host_pipeline:
             shutil.copy2(build / "host_neural.exe", work / "host_neural.exe")
         compat.mkdir(exist_ok=True)
         report["proton_version"] = (proton / "version").read_text().strip() if (proton / "version").is_file() else "unknown"
-        for name in ("LmxxfNrRuntime.dll", "LmxxfNrRuntime.pak", "d3d12.dll", "d3d12core.dll",
+        for name in (*(LMXXF_FILES if args.lmxxf else ("winmm.dll",)), "d3d12.dll", "d3d12core.dll",
                      "amdnr-linux/x86_64-windows/amdhip64_7.dll", "amdnr-linux/x86_64-unix/amdhip64_7.so",
                      "amdnr-linux/x86_64-unix/libamdnr_signal_guard.so"):
             with (package / name).open("rb") as binary:
                 report["binaries"][name] = hashlib.file_digest(binary, "sha256").hexdigest()
+        for name in DANIEL_FILES if args.daniel_runtime else ():
+            with (args.daniel_runtime / name).open("rb") as binary:
+                report["binaries"]["daniel/" + name] = hashlib.file_digest(binary, "sha256").hexdigest()
+        if args.optipatcher:
+            with args.optipatcher.open("rb") as binary:
+                report["binaries"]["OptiScaler/plugins/OptiPatcher.asi"] = hashlib.file_digest(binary, "sha256").hexdigest()
         prefix_started = True
         execute([proton / "proton", "run", "cmd.exe", "/c", "exit"], env, work, work / "prefix.log")
         lib = proton / ("files/lib64" if (proton / "files/lib64").is_dir() else "files/lib")
@@ -218,6 +260,7 @@ def run_suite(args, package, build, work, proton):
             ("exception_smoke", []),
             ("exception_context", [windows(work / "compute.hsaco")]),
             ("hip_smoke", [windows(work / "compute.hsaco")]),
+            ("hip_registration", [windows(work / "registered.hipfb")]),
             ("d3d12_interop", []),
             ("host_shaders", []),
             ("neural_smoke", [windows(package / "LmxxfNrRuntime.dll"), windows(package / "LmxxfNrRuntime.pak"),
@@ -225,6 +268,11 @@ def run_suite(args, package, build, work, proton):
         )
         for name, arguments in cases:
             if args.neural_only and name != "neural_smoke":
+                continue
+            if name == "neural_smoke" and not args.lmxxf:
+                skip = "SKIP: neural_smoke needs the lmxxf runtime, which this host package does not carry"
+                print(skip, flush=True)
+                report["tests"].append({"log": name + ".log", "status": "skipped", "skips": [skip]})
                 continue
             execute([wine, work / (name + ".exe"), *arguments], env, work, work / (name + ".log"), expect_pass=True)
         if args.with_host:
@@ -244,18 +292,31 @@ def run_suite(args, package, build, work, proton):
             settings.update({("Upscalers", "Dx12Upscaler"): "fsr21", ("FrameGen", "Enabled"): "false",
                              ("DLSS", "Enabled"): "false", ("OutputScaling", "Enabled"): "false",
                              ("DlssNr", "NrBackend"): "lmxxf"})
-            for mode in ("baseline", "neural"):
+            runs = [("baseline", "lmxxf"), ("neural", "lmxxf")] if args.lmxxf else [("baseline", "daniel")]
+            if args.daniel_runtime:
+                runs.append(("daniel", "daniel"))
+            logs = ("OptiScaler.log", "lmxxf_backend.log", "amd_bridge.log", "amd_presr.log", "dlssnr_on_amd.log")
+            for label, backend in runs:
+                mode = "baseline" if label == "baseline" else "neural"
                 settings[("DlssNr", "Enabled")] = "true" if mode == "neural" else "false"
+                settings[("DlssNr", "NrBackend")] = backend
                 host_config(package / "OptiScaler.ini", work / "OptiScaler.ini", settings)
-                for name in ("OptiScaler.log", "lmxxf_backend.log", "amd_bridge.log"):
+                for name in logs:
                     (work / name).unlink(missing_ok=True)
                 reference = windows(work / "host-baseline.bin") if mode == "neural" else "-"
                 execute([wine, work / "host_neural.exe", windows(work / "winmm.dll"), mode,
-                     windows(work / f"host-{mode}.bin"), reference], env, work,
-                    work / f"host-pipeline-{mode}.log", expect_pass=True)
-                for name in ("OptiScaler.log", "lmxxf_backend.log", "amd_bridge.log"):
+                     windows(work / f"host-{label}.bin"), reference], env, work,
+                    work / f"host-pipeline-{label}.log", expect_pass=True)
+                for name in logs:
                     if (work / name).exists():
-                        shutil.copy2(work / name, work / f"{Path(name).stem}-host-{mode}.log")
+                        shutil.copy2(work / name, work / f"{Path(name).stem}-host-{label}.log")
+                if args.optipatcher:
+                    # The released host searches OptiScaler/plugins beside itself.
+                    loaded = re.search(r"Loaded: .*OptiScaler[\\/]plugins[\\/]OptiPatcher\.asi",
+                                       (work / "OptiScaler.log").read_text(errors="replace"))
+                    if not loaded:
+                        raise RuntimeError(f"Host did not load OptiScaler/plugins/OptiPatcher.asi during the {label} run; see OptiScaler.log")
+                    print(f"PASS: host loaded OptiScaler/plugins/OptiPatcher.asi ({label})", flush=True)
         report["status"] = "passed_with_skips" if any(test["status"] in ("skipped", "passed_with_skips") for test in report["tests"]) else "passed"
     except BaseException as error:
         original_error = error

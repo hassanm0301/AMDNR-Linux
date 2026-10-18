@@ -22,7 +22,7 @@ python3 "$root/bridge/generate.py" "$out/generated"
 "${WINEGCC:-winegcc}" -b "${MINGW_TARGET:-x86_64-w64-mingw32}" -m64 -shared \
     -std=gnu11 -O2 -g -Wall -Wextra -Werror=implicit-function-declaration \
     -I"$rocm/include" -I"$root/bridge" -I"$out/generated" -I"$out/pe-include" -I"$wine_headers" \
-    "$root/bridge/pe_loader.c" "$root/bridge/identity.c" "$root/bridge/interop.c" \
+    "$root/bridge/pe_loader.c" "$root/bridge/identity.c" "$root/bridge/interop.c" "$root/bridge/registration.c" \
     "$root/bridge/fence_pe.c" "$root/bridge/vulkan_memory_pe.c" "$root/bridge/diagnostics.c" \
     "$out/generated/native_api.c" "$out/generated/forward.c" \
     -Wb,--export="$out/generated/amdhip64_7.spec" -lntdll -ldxgi -ld3d12 -luuid \

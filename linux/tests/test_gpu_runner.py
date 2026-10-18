@@ -2,6 +2,7 @@
 import importlib.util
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -37,7 +38,8 @@ class GpuRunnerTests(unittest.TestCase):
             path.write_bytes(name.encode())
         self.build.mkdir()
         for name in ('syscall_dispatch.exe', 'hip_smoke.exe', 'exception_smoke.exe',
-                     'exception_context.exe', 'compute.hsaco', 'd3d12_interop.exe',
+                     'exception_context.exe', 'compute.hsaco', 'hip_registration.exe',
+                     'hip_registration_module.dll', 'registered.hipfb', 'd3d12_interop.exe',
                      'neural_smoke.exe', 'host_shaders.exe'):
             (self.build / name).write_bytes(b'not executed')
         self.output = self.work / 'output'
@@ -127,6 +129,74 @@ class GpuRunnerTests(unittest.TestCase):
         self.assertEqual(result['error'], 'original neural failure')
         self.assertEqual(result['cleanup_error'], 'cleanup failure')
         self.assertEqual(result['status'], 'failed')
+
+    def test_optional_runtime_and_plugin_imply_host_pipeline_and_are_checked(self):
+        self.fixtures()
+        daniel = self.work / 'daniel'
+        daniel.mkdir()
+        argv = ['test.py', '--package', str(self.package), '--build', str(self.build), '--proton', str(self.proton),
+                '--output', str(self.output), '--daniel-runtime', str(daniel)]
+        with patch.object(sys, 'argv', argv), patch('sys.stderr'), self.assertRaises(SystemExit):
+            runner.main()
+        self.assertFalse(self.output.exists())
+        for name in runner.DANIEL_FILES:
+            (daniel / name).write_bytes(name.encode())
+        seen = {}
+
+        def capture(args, package, build, work, proton):
+            seen.update(host_pipeline=args.host_pipeline, daniel=args.daniel_runtime)
+        with patch.object(sys, 'argv', argv), patch.object(runner, 'run_suite', side_effect=capture):
+            runner.main()
+        self.assertEqual(seen, {'host_pipeline': True, 'daniel': daniel.resolve()})
+        with patch.object(sys, 'argv', argv[:-2] + ['--optipatcher', str(self.work / 'missing.asi')]), \
+                patch('sys.stderr'), self.assertRaises(SystemExit):
+            runner.main()
+
+    def test_package_without_lmxxf_runs_only_danielblnc_host_checks(self):
+        self.fixtures()
+        for name in runner.LMXXF_FILES:
+            (self.package / name).unlink()
+        (self.package / 'winmm.dll').write_bytes(b'alternate host')
+        (self.package / 'OptiScaler').mkdir()
+        (self.package / 'OptiScaler.ini').write_text(
+            '[Log]\nLogToFile=true\nLogLevel=2\n[Menu]\nOverlayMenu=auto\n[Spoofing]\nDxgi=auto\nVulkan=auto\n'
+            '[Hotfix]\nCheckForUpdate=auto\n[Upscalers]\nDx12Upscaler=ffx\n[FrameGen]\nEnabled=false\n'
+            '[DLSS]\nEnabled=auto\n[OutputScaling]\nEnabled=auto\n[DlssNr]\nEnabled=false\nNrBackend=lmxxf\n')
+        (self.build / 'host_neural.exe').write_bytes(b'not executed')
+        daniel = self.work / 'daniel'
+        daniel.mkdir()
+        for name in runner.DANIEL_FILES:
+            (daniel / name).write_bytes(name.encode())
+        base = ['test.py', '--package', str(self.package), '--build', str(self.build), '--proton', str(self.proton),
+                '--output', str(self.output)]
+        for extra in (['--host-pipeline'], ['--with-host', '--daniel-runtime', str(daniel)]):
+            with self.subTest(extra), patch.object(sys, 'argv', base + extra), patch('sys.stderr'), \
+                    self.assertRaises(SystemExit):
+                runner.main()
+        ran = []
+
+        def record(command, env, directory, log, **options):
+            if Path(command[1]).name == 'host_neural.exe':
+                ini = (directory / 'OptiScaler.ini').read_text()
+                ran.append((command[3], re.search(r'(?m)^NrBackend=(\w+)$', ini)[1],
+                            re.search(r'(?m)^Dx12Upscaler=(\w+)$', ini)[1]))
+            else:
+                ran.append(Path(command[1]).name)
+            return self.passed(command, env, directory, log, **options)
+        with patch.object(sys, 'argv', base + ['--daniel-runtime', str(daniel)]), \
+                patch.object(runner, 'run', side_effect=record), \
+                patch.object(runner, 'environment', side_effect=lambda bundle, env: env), \
+                patch.object(runner, 'prepare_prefix'):
+            runner.main()
+        self.assertNotIn('neural_smoke.exe', ran)
+        self.assertEqual([item for item in ran if isinstance(item, tuple)],
+                         [('baseline', 'daniel', 'fsr21'), ('neural', 'daniel', 'fsr21')])
+        report = json.loads((self.output / 'results.json').read_text())
+        self.assertEqual(report['status'], 'passed_with_skips')
+        self.assertIn({'log': 'neural_smoke.log', 'status': 'skipped'},
+                      [{key: test[key] for key in ('log', 'status')} for test in report['tests']])
+        self.assertIn('winmm.dll', report['binaries'])
+        self.assertFalse((self.output / 'LmxxfNrRuntime.dll').exists())
 
     def test_same_output_cannot_be_reused_while_another_run_holds_lock(self):
         self.fixtures()

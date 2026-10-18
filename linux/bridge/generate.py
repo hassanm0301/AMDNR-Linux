@@ -64,6 +64,29 @@ API = [
     ("hipMemGetAllocationGranularity", "size_t *size, const hipMemAllocationProp *properties, hipMemAllocationGranularity_flags flags", "ptr ptr long"),
     ("hipGetLastError", "void", ""),
     ("hipPeekAtLastError", "void", ""),
+    # Kernels compiled into a HIP module (danielblnc's runtime) launch through
+    # host stubs: push/pop the launch shape, then hipLaunchKernel(stub, ...).
+    # dim3 is 12 bytes: the Windows ABI passes it by reference, SysV in registers.
+    # Both halves are compiled C, so each compiler lowers its own side.
+    ("__hipPushCallConfiguration", "dim3 grid, dim3 block, size_t shared, hipStream_t stream", "ptr ptr int64 ptr"),
+    ("__hipPopCallConfiguration", "dim3 *grid, dim3 *block, size_t *shared, hipStream_t *stream", "ptr ptr ptr ptr"),
+    ("hipLaunchKernel", "const void *function, dim3 grid, dim3 block, void **params, size_t shared, hipStream_t stream", "ptr ptr ptr ptr int64 ptr"),
+    ("hipMemcpyToSymbol", "const void *symbol, const void *src, size_t size, size_t offset, hipMemcpyKind kind", "ptr ptr int64 int64 long"),
+    ("hipMemcpyFromSymbol", "void *dst, const void *symbol, size_t size, size_t offset, hipMemcpyKind kind", "ptr ptr int64 int64 long"),
+    ("hipMemcpyToSymbolAsync", "const void *symbol, const void *src, size_t size, size_t offset, hipMemcpyKind kind, hipStream_t stream", "ptr ptr int64 int64 long ptr"),
+    ("hipGetSymbolAddress", "void **pointer, const void *symbol", "ptr ptr"),
+    ("hipGetSymbolSize", "size_t *size, const void *symbol", "ptr ptr"),
+    ("hipDeviceGetStreamPriorityRange", "int *least, int *greatest", "ptr ptr"),
+    ("hipOccupancyMaxActiveBlocksPerMultiprocessor", "int *blocks, const void *function, int block_size, size_t shared", "ptr ptr long int64"),
+]
+# The compiler's module-registration ABI, called from HIP modules' static
+# constructors/destructors. Not in public headers: declared in hip_types.h.
+# Exported through registration.c, which validates handles first.
+REGISTRATION = [
+    ("__hipRegisterFatBinary", "const void *wrapper", "void **", "ptr"),
+    ("__hipRegisterFunction", "void **modules, const void *host_function, char *device_function, const char *device_name, unsigned thread_limit, void *tid, void *bid, dim3 *block, dim3 *grid, int *warp_size", "void", "ptr ptr ptr str long ptr ptr ptr ptr ptr"),
+    ("__hipRegisterVar", "void **modules, void *variable, char *host_name, char *device_name, int external, size_t size, int constant, int global", "void", "ptr ptr ptr str long int64 long long"),
+    ("__hipUnregisterFatBinary", "void **modules", "void", "ptr"),
 ]
 CUSTOM = {
     "hipGetDevicePropertiesR0600": "ptr long", "hipDeviceGetName": "ptr long long",
@@ -92,6 +115,7 @@ def generate(output):
     catalog = [(name, args, 'hipError_t') for name, args, _ in API]
     catalog += [(name, args, 'hipError_t') for name, args in EXTRA]
     catalog += [(name, 'hipError_t error', 'const char *') for name in ('hipGetErrorName', 'hipGetErrorString')]
+    catalog += [(name, args, result_type) for name, args, result_type, _ in REGISTRATION]
     ids = [name for name, _, _ in catalog] + ['vulkan_fd', 'close_fd', 'fence_launch', 'fence_wait', 'fence_complete']
     shared = ['/* Generated. SPDX-License-Identifier: GPL-3.0-or-later */', '#pragma once', '#include "hip_types.h"',
               '#include "fence_shared.h"', 'enum amdnr_unix_code {']
@@ -103,9 +127,24 @@ def generate(output):
     for name, args, result_type in catalog:
         arg_fields = fields(args)
         names = [field_name(a) for a in arg_fields]
-        shared += [f'struct amdnr_args_{name} {{'] + [f'    {a};' for a in arg_fields] + [f'    {result_type} result;', '};']
+        call = f'function({", ".join("args->" + n for n in names)})'
         header += [f'{result_type} amdnr_native_{name}({args});']
-        fallback = 'hipErrorNotSupported' if result_type == 'hipError_t' else '"Linux HIP library unavailable"'
+        if result_type == 'void':
+            # No result to report. A missing native symbol leaves the
+            # registration absent, so the later launch fails with an error.
+            shared += [f'struct amdnr_args_{name} {{'] + [f'    {a};' for a in arg_fields] + ['    int32_t unused;', '};']
+            values = ', '.join([f'.{n} = {n}' for n in names] + ['.unused = 0'])
+            pe += [f'void amdnr_native_{name}({args}) {{',
+                   f'    struct amdnr_args_{name} args = {{{values}}};',
+                   f'    amdnr_unix_call(AMDNR_UNIX_{name}, &args);', '}']
+            native += [f'static int32_t call_{name}(void *opaque) {{',
+                       f'    struct amdnr_args_{name} *args = opaque;',
+                       f'    __typeof__(&{name}) function = (__typeof__(&{name}))amdnr_symbol("{name}");',
+                       f'    if (function) {call};',
+                       '    return 0;', '}']
+            continue
+        shared += [f'struct amdnr_args_{name} {{'] + [f'    {a};' for a in arg_fields] + [f'    {result_type} result;', '};']
+        fallback = {'hipError_t': 'hipErrorNotSupported', 'const char *': '"Linux HIP library unavailable"'}.get(result_type, 'NULL')
         values = ', '.join([f'.{n} = {n}' for n in names] + [f'.result = {fallback}'])
         pe += [f'{result_type} amdnr_native_{name}({args}) {{',
                f'    struct amdnr_args_{name} args = {{{values}}};',
@@ -114,7 +153,7 @@ def generate(output):
         native += [f'static int32_t call_{name}(void *opaque) {{',
                    f'    struct amdnr_args_{name} *args = opaque;',
                    f'    __typeof__(&{name}) function = (__typeof__(&{name}))amdnr_symbol("{name}");',
-                   f'    args->result = function ? function({", ".join("args->" + n for n in names)}) : {fallback};',
+                   f'    args->result = function ? {call} : {fallback};',
                    '    return 0;', '}']
     shared += ['struct amdnr_args_vulkan_fd { uint64_t device, memory; int32_t fd, result; };',
                'struct amdnr_args_close_fd { int32_t fd; };']
@@ -156,6 +195,8 @@ def generate(output):
     for name in ('hipGetErrorName', 'hipGetErrorString'):
         forward += [f'const char * WINAPI amdnr_{name}(hipError_t error) {{ return amdnr_native_{name}(error); }}']
         exports[name] = 'long'
+    for name, _, _, spec in REGISTRATION:
+        exports[name] = spec
     for filename, lines in [('unix_args.h', shared), ('native_api.h', header), ('native_api.c', pe), ('unix_calls.c', native), ('forward.c', forward)]:
         (output / filename).write_text('\n'.join(lines) + '\n')
     (output / 'amdhip64_7.spec').write_text('\n'.join(f'@ stdcall {name}({args}) amdnr_{name}' for name, args in sorted(exports.items())) + '\n')
