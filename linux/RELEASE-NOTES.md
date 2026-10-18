@@ -79,6 +79,13 @@ danielblnc version 0.4.0–0.6.0 also passed that host run on its own. All Linux
 unit tests pass, and a real pinned package with danielblnc 0.6.0 and OptiPatcher
 completed install and uninstall in a temporary game folder.
 
+Two early runs of the release binaries failed at the first lmxxf host-pipeline
+frame (one crash, one hang), minutes after the display was reconnected. The
+same binaries then passed six consecutive runs, and a side-by-side comparison
+passed 3/3 for the previous bridge, the development build and the release
+build. The cause was not identified; please report a crash at the first frame
+with `OptiScaler.log`, `lmxxf_backend.log` and `amd_bridge.log`.
+
 All **20 CPU proxy probes** passed: five aliases, both explicit loading and
 static imports, under GE-Proton11-9 and Proton-Wineland 11.0. Each verified the
 released AMDNR host and representative Windows API forwarding. The real pinned
