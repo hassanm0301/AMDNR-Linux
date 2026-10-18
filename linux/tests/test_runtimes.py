@@ -67,6 +67,7 @@ class CatalogTests(unittest.TestCase):
         # The pre-SR host identifies danielblnc's own 0.3.x builds, not the 0.4+ repackaged ones.
         self.assertEqual(runtimes.HOST_RUNTIMES[runtimes.PRESR.host_version], ("0.3.1",))
         self.assertNotIn("0.3.1", runtimes.HOST_RUNTIMES["0.3.5.5R4"])
+        self.assertNotIn("0.3.1", runtimes.HOST_RUNTIMES["0.3.5.6"])
 
     def test_lookup_rejects_unknown_versions(self):
         self.assertEqual(runtimes.daniel_runtime("0.5.1").pass_sha256[:8], "493b4a3b")
@@ -110,15 +111,16 @@ class HostAndGpuTests(unittest.TestCase):
         self.assertIsNone(runtimes.detect_gpu(self.root / "missing"))
 
     def test_gpu_and_host_filters(self):
-        def offered(gpu, host_version="0.3.5.5R4"):
+        def offered(gpu, host_version="0.3.5.6"):
             return [runtime.version for runtime in runtimes.runtimes_for(gpu, host_version=host_version)]
         rdna4 = {"gfx": "gfx1201", "generation": "rdna4", "apu": False}
         self.assertEqual(offered(rdna4), ["0.6.0", "0.5.1", "0.5.0", "0.4.3", "0.4.1", "0.4.0"])
         self.assertEqual(offered(rdna4, "0.3.4.2"), ["0.5.0", "0.4.3", "0.4.1", "0.4.0"])
+        self.assertEqual(offered(rdna4, "0.3.5.5R4"), offered(rdna4))
         self.assertEqual(offered({"gfx": "gfx1030", "generation": "rdna2", "apu": False}), ["0.6.0"])
         self.assertEqual(offered({"gfx": "gfx1103", "generation": "rdna3", "apu": True}), [])
         self.assertEqual(offered({"gfx": "gfx1010", "generation": "rdna1", "apu": False}), [])
-        self.assertEqual(offered(None), list(runtimes.HOST_RUNTIMES["0.3.5.5R4"]))
+        self.assertEqual(offered(None), list(runtimes.HOST_RUNTIMES["0.3.5.6"]))
         self.assertEqual(offered(rdna4, "unknown host"), [])
         presr = runtimes.PRESR.host_version
         self.assertEqual(offered(rdna4, presr), ["0.3.1"])

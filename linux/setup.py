@@ -18,7 +18,7 @@ import manage
 import runtimes
 
 ROOT = Path(__file__).resolve().parent
-RELEASE_VERSION = "0.3.5.5R4"
+RELEASE_VERSION = "0.3.5.6"
 RELEASE_SHA256 = next(digest for digest, version in manage.RELEASES.items() if version == RELEASE_VERSION)
 ARCHIVE_NAME = f"AMDNR-v{RELEASE_VERSION}.zip"
 RELEASE_URL = f"https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha{RELEASE_VERSION}/{ARCHIVE_NAME}"
@@ -181,7 +181,7 @@ def main(argv=None):
     sub = parser.add_subparsers(dest="command", required=True)
     command = sub.add_parser("prepare", help="Verify binaries and prepare a package with pinned upstream assets")
     command.add_argument("--compiler", type=Path, required=True, help="Native 64-bit d3dcompiler_47.dll from your own game installation")
-    command.add_argument("--archive", type=Path, help="Existing pinned host archive (AMDNR 0.3.5.5R4 or the --host build); downloaded when omitted")
+    command.add_argument("--archive", type=Path, help=f"Existing pinned host archive (AMDNR {RELEASE_VERSION} or the --host build); downloaded when omitted")
     command.add_argument("--host", choices=[build.key for build in runtimes.HOST_BUILDS],
                          help="Use an alternate OptiScaler host instead of AMDNR: presr is TheAutomatic's "
                               "OptiScaler AMD pre-SR, which runs danielblnc's runtime only")

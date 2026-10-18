@@ -30,11 +30,11 @@ class ComponentController(fixtures.FakeController):
         result.update(addon_version="0.2.2" if self.installed else None, components=self.components_installed,
                       notices=list(self.game_notices),
                       component_choices=dict(supported=True, gpu={"gfx": "gfx1201", "generation": "rdna4", "apu": False},
-                                             host_version="0.3.5.5R4", runtimes=["0.6.0", "0.5.1"],
+                                             host_version="0.3.5.6", runtimes=["0.6.0", "0.5.1"],
                                              optipatcher=["0.41", "0.40"], selected=dict(self.selection)))
         if self.offer_hosts:
             result["component_choices"].update(
-                hosts=[dict(key="amdnr", title="AMDNR 0.3.5.5R4", builtin_runtime=True),
+                hosts=[dict(key="amdnr", title="AMDNR 0.3.5.6", builtin_runtime=True),
                        dict(key="presr", title="OptiScaler AMD pre-SR 1.9.1-alpha", author="TheAutomatic",
                             builtin_runtime=False)],
                 host_runtimes={"amdnr": ["0.6.0", "0.5.1"], "presr": ["0.3.1"]})

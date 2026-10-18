@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parent
 RELEASES = {
     "013081a3a225ef927d96d8996b64910d62f796022b20bef6a6ea102670b0cb63": "0.3.4.2",
     "725cef9da0608621fe3233a7127e6511b9543061fcecaba8348b2c55c608d448": "0.3.5.5R4",
+    "e7ffc09696f1a4e06d26dc0c228d15a9c74a0e56e3d24be6a130a0f5e49968d8": "0.3.5.6",
 }
 RECORD = ".amdnr-linux-install.json"
 BACKUP = ".amdnr-linux-backup"

@@ -156,7 +156,7 @@ def main():
         metadata = {
             "release": f"linux-v{args.version}", "source_commit": commit,
             "bridge_format": "Wine PE builtin plus native Unixlib",
-            "upstream_amdnr": "0.3.5.5R4", "private_rocm": "7.2.4",
+            "upstream_amdnr": "0.3.5.6", "private_rocm": "7.2.4",
             "vkd3d_proton_commit": VKD3D_REVISION,
             "validation": validation,
             "excluded": ["upstream host/runtime/model", "Microsoft shader compiler", "ROCm binaries", "game files", "prefixes and user logs"],
