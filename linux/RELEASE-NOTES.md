@@ -1,9 +1,9 @@
-# Linux v0.3.1-preview — AMDNR 0.3.5.6 host
+# Linux v0.3.1-preview — AMDNR 0.3.5.6 host and Model E
 
 Development **pre-release**. The manager and `setup.py` now install upstream
-**AMDNR 0.3.5.6**. The Linux bridge and patched graphics binaries are the same
-files as in v0.3.0-preview; only the pinned host/runtime and the Python tools
-change. No game has been played with 0.3.5.6 on Linux yet.
+**AMDNR 0.3.5.6**, and can add its new **Model E** upscaler (HelixSR). The Linux
+bridge and patched graphics binaries are the same files as in v0.3.0-preview.
+No game has been played with 0.3.5.6 or Model E on Linux yet.
 
 ## New
 
@@ -11,40 +11,58 @@ change. No game has been played with 0.3.5.6 on Linux yet.
   upstream's GitHub release (`AMDNR-v0.3.5.6.zip`, SHA-256 `e7ffc096…49968d8`,
   753,230,845 bytes), which upstream's own manifest now names too. Its archive
   has the same files as 0.3.5.5R4 and an identical `OptiScaler.ini`; the host,
-  the lmxxf runtime, its kernel pack and upstream's documents and notice change. See upstream's changelog for what
-  0.3.5.6 changes in-game (Full Model Look by default, extra face detail, less
-  lmxxf ghosting, the danielblnc "timeout" fix, a smaller default network on
-  RX 7000 and handhelds, new menu rows).
+  the lmxxf runtime, its kernel pack and upstream's documents and notice change.
+  See upstream's changelog for what 0.3.5.6 changes in-game (Full Model Look by
+  default, extra face detail, less lmxxf ghosting, the danielblnc "timeout" fix,
+  a smaller default network on RX 7000 and handhelds, new menu rows).
+- **Model E (HelixSR by lonewolf0622), optional.** HelixSR runs NVIDIA's DLSS
+  network as Direct3D 12 shaders and replaces FSR 3.1 / FSR 4 in D3D12 games,
+  with either neural runtime. Tick **Model E upscaler** in a game's panel (or
+  `setup.py prepare --model-e`). After a one-time notice, the manager downloads
+  HelixSR 1.8.1 from its author's release, Microsoft's DirectX shader compiler,
+  and NVIDIA's DLSS 310.7.0 DLL from NVIDIA's GitHub under NVIDIA's licence, and
+  runs HelixSR's own setup scripts to build its network on your PC (about a
+  minute, once). It needs Python 3 with numpy and Proton or Wine. NVIDIA's DLL is
+  deleted afterwards; the built files contain NVIDIA's network and stay on your
+  PC. The game gets `AMDNR-SR-E/` with the receipt AMDNR 0.3.5.6 checks before it
+  loads HelixSR, and `[Upscalers] FfxSRProvider=helix_e`. Unticking it puts the
+  game's FSR provider back.
 - The 0.3.5.6 host pins the same danielblnc pass digests as 0.3.5.5R4, so the
   manager keeps offering danielblnc 0.4.0–0.6.0 with it.
 - **Update** in the manager moves an installed game from 0.3.5.5R4 to 0.3.5.6
   and keeps the game's `OptiScaler.ini`, including your own edits.
+- Save logs includes `AMDNR-SR-E/helixsr.log`.
 - 0.3.5.5R4 and 0.3.4.2 archives are still accepted by `manage.py stage`.
+- GPU tests: `--model-e` adds FSR 3.1 host runs without and with Model E, and
+  with Model E plus lmxxf.
 
 ## Validation
 
-The complete GPU suite passed three times in a row under Proton-Wineland 11.0
-(2026-09-30) on RX 9070 XT with the 0.3.5.6 package: the released host under its
-hooks; the 720-frame NR-off/on host pipeline with lmxxf (597 fresh composed
-outputs in a 599-frame reporting window, mean absolute RGB change 0.0256 from the
-NR-off image); a third host run with danielblnc 0.6.0 (700–717 passes, no
-timeouts, mean absolute change 0.0208); and OptiPatcher 0.41 loading from
-`OptiScaler/plugins`. The only skip is Wineland's known shared-fence rewind
-limitation. All 306 Linux unit tests pass. The real 0.3.5.6 package completed
-install and uninstall in a temporary game folder through `manage.py`, and an
-install of the v0.3.0-preview package (0.3.5.5R4) updated to it through the
-manager's backend and uninstalled cleanly.
+The complete GPU suite passed under Proton-Wineland 11.0 (2026-09-30) on
+RX 9070 XT with the 0.3.5.6 package: the released host under its hooks; the
+720-frame NR-off/on host pipeline with lmxxf (597 fresh composed outputs in a
+599-frame reporting window, mean absolute RGB change 0.0256 from the NR-off
+image); a host run with danielblnc 0.6.0 (every pass completed, no timeouts);
+OptiPatcher 0.41 loading from `OptiScaler/plugins`; and the new Model E runs.
+With Model E, the host verified the receipt and created HelixSR's context,
+HelixSR's network ran on all 720 frames, its output differed from FSR 3.1 on
+16.6% of output channels, and Model E with lmxxf NR passed the same composition
+checks as lmxxf alone. HelixSR's network was built here from NVIDIA's DLSS
+310.7.0 DLL in about 30 seconds. The only skip is Wineland's known shared-fence
+rewind limitation. All 324 Linux unit tests pass. The real 0.3.5.6 package
+completed install and uninstall in a temporary game folder through `manage.py`,
+and an install of the v0.3.0-preview package (0.3.5.5R4) updated to it through
+the manager's backend and uninstalled cleanly.
 
 These are synthetic API and pipeline checks. No new game compatibility or
 long-duration gameplay stability is claimed.
 
 ## Not included
 
-- **Model E** (HelixSR by lonewolf0622), new in 0.3.5.6. HelixSR's network has
-  to be built on each user's PC by HelixSR's own setup scripts from NVIDIA's
-  DLSS DLL; this release does not do that yet.
-- **Model L** (d4r by countervolts): it needs HIP/ZLUDA functions the bridge
-  does not provide.
+- **Model L** (d4r by countervolts), new in 0.3.5.6: it needs HIP/ZLUDA
+  functions the bridge does not provide.
+- AMDNR's own "AMD SDK" package for HelixSR: it is published only on AMDNR's
+  server, not on GitHub, and HelixSR's upscaling does not need it.
 - AMDNR Anywhere (needs Windows window capture) and the NVIDIA-only
   `nvngx.dll_dlssnr.dll` forwarder.
 

@@ -137,11 +137,29 @@ The selected game's panel has a **Neural runtime and plugins** section:
   TheAutomatic's GitHub, installs the host, its `OptiScaler/` folder, its
   shaders and its licences, and leaves out its Windows Setup/Uninstall scripts.
   It passes the same automated host test on Linux; no game report yet.
+- **Model E upscaler** is HelixSR by lonewolf0622, new with AMDNR 0.3.5.6. It
+  is a separate upscaler that runs NVIDIA's DLSS network as Direct3D 12 shaders
+  and replaces FSR 3.1 / FSR 4 in D3D12 games; it works with either neural
+  runtime. Ticking it first shows a notice to accept. The manager then downloads
+  HelixSR 1.8.1 from its author's GitHub release, Microsoft's DirectX shader
+  compiler from Microsoft's GitHub, and NVIDIA's DLSS 310.7.0 DLL from NVIDIA's
+  GitHub (under [NVIDIA's licence](https://github.com/NVIDIA/DLSS/blob/v310.7.0/LICENSE.txt)),
+  and runs HelixSR's own setup scripts to build HelixSR's network on this PC.
+  This needs **Python 3 with numpy** from your distribution (`python-numpy` or
+  `python3-numpy`) and Proton or Wine for the shader compiler; it takes about
+  a minute and is done once, then reused for every game. NVIDIA's DLL is deleted
+  after the build. The built files contain NVIDIA's network: keep them on your
+  PC and do not share or upload them. Model E needs the AMDNR host and an
+  RDNA 1 or newer GPU. It is installed as `AMDNR-SR-E/` beside the host and
+  selected with `[Upscalers] FfxSRProvider=helix_e`; in the game, choose an FSR
+  3.1 / FSR 4 upscaler (or DLSS, which OptiScaler hands to FSR) as usual. On
+  Linux it passes the automated host test only; no game report yet.
 
 Choose before **Install**. For an installed game, change the selection and
-click **Apply runtime and plugin**; this repairs (or updates) the installation
+click **Apply runtime, plugin and upscaler**; this repairs (or updates) the installation
 with the new files. Only the keys that belong to the change are rewritten in
-`OptiScaler.ini` (`[DlssNr] NrBackend`, `[Plugins] LoadAsiPlugins`); your other
+`OptiScaler.ini` (`[DlssNr] NrBackend`, `[Plugins] LoadAsiPlugins`, and for
+Model E `[Upscalers] FfxSRProvider` and `[Libraries] HelixSRPath`); your other
 settings and comments stay. Both runtimes remain installed side by side, so the
 in-game **Neural** tab can still switch runtimes; a later Repair keeps that
 in-game choice. Uninstall removes the runtime, the plugin and the
@@ -244,8 +262,9 @@ change the neural renderer's hardware requirements.
 - **Automated only:** danielblnc's runtime (0.4.0–0.6.0) passes the released
   host's NGX/FSR2 pipeline test on RX 9070 XT, with every GPU job completed and a
   material change from the NR-off image. The same test passes with TheAutomatic's
-  pre-SR 1.9.1-alpha host and danielblnc 0.3.1. No game has been reported yet
-  for either.
+  pre-SR 1.9.1-alpha host and danielblnc 0.3.1. Model E (HelixSR) passes the
+  host's FSR 3.1 pipeline test, alone and with lmxxf, with its network running
+  on every frame. No game has been reported yet for any of these.
 - **Not validated:** other GPUs, Steam Deck, Flatpak Steam, other game runners,
   frame generation and Ray Regeneration. AMDNR Anywhere is not supported on Linux:
   its capture host relies on Windows window capture that Wine does not provide.
@@ -257,7 +276,9 @@ OptiScaler; **Home** toggles the neural effect. The prepared package selects the
 **lmxxf** backend unless you chose danielblnc's runtime. A banner alone does not
 prove neural inference is running. With danielblnc's runtime, look instead for
 `Completed AMD pre-SR passes=` in `amd_presr.log` and `network job … done` lines
-in `dlssnr_on_amd.log`.
+in `dlssnr_on_amd.log`. With Model E, `OptiScaler.log` shows
+`[SR_PROVIDER] requested=helix_e ready=true actual=HelixSR` and
+`AMDNR-SR-E/helixsr.log` shows `network running`; Save logs includes both.
 Look in `lmxxf_backend.log` beside the executable for `hip=1`, successful network
 initialization, and increasing **model** and **fresh composition** counts. The
 successful Stellar Blade run recorded 3,599 model frames and 3,594 fresh outputs,

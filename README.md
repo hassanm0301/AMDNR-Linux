@@ -468,6 +468,7 @@ are still being tested.
 
 This fork adds an experimental Linux ROCm bridge for lmxxf Neural Rendering, with
 danielblnc's runtime as an option, on the AMDNR 0.3.5.6 host.
+Model E (HelixSR) is also offered; its network is built on your PC by HelixSR's own setup.
 **Native Linux launcher: [download and installation guide](linux/INSTALL.md).**
 AMDNR Linux Manager detects Steam games and handles Install, Repair, Update and Uninstall,
 including verified downloads, backups and Steam launch options. Extract the portable app

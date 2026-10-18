@@ -77,12 +77,14 @@ Their CPU/compiler checks are described in
 - An unmodified AMDNR release archive and a native Microsoft `d3dcompiler_47.dll`
   from your own game installation. The tested compiler is version 10.0.14393.795.
   Wine's builtin compiler cannot compile all of the host's temporal shader.
+- Only for the optional Model E: Python 3 with numpy, and Proton or Wine to run
+  Microsoft's Windows shader compiler while HelixSR's network is built.
 
 The private runtime download contains the required ROCm libraries, approximately
 186 MiB extracted. It does not install packages, run package scripts, change the
 system driver, or require root. ROCm headers/compiler are build dependencies only.
-danielblnc's runtime is optional (see below) and passes the automated host
-pipeline test; it has no gameplay report on Linux yet. AMDNR Anywhere, frame
+danielblnc's runtime and Model E are optional (see below) and pass the automated
+host pipeline test; they have no gameplay report on Linux yet. AMDNR Anywhere, frame
 generation and Ray Regeneration are outside this bridge's validation coverage.
 
 ## Build and stage
@@ -172,6 +174,45 @@ they need the compiler's module ABI: `__hipRegisterFatBinary`,
 `hipDeviceGetStreamPriorityRange`. The bridge exports all of them (see
 `bridge/registration.c`); every amdhip64_7.dll import of runtimes 0.4.0–0.6.0 is
 covered.
+
+## Optional upscaler: Model E (HelixSR)
+
+AMDNR 0.3.5.6 adds **Model E**, HelixSR by lonewolf0622
+([github.com/lonewolf0622/HelixSR](https://github.com/lonewolf0622/HelixSR),
+HelixSR Freeware License). HelixSR runs NVIDIA's DLSS network as Direct3D 12
+compute shaders, without HIP, so on Linux it runs through vkd3d-proton rather
+than the bridge, with either neural runtime. Its release carries no NVIDIA
+material: its own setup scripts (Apache-2.0) build the network on the user's PC
+from NVIDIA's DLSS 310.7.0 DLL. This fork does the same and never ships the
+result:
+
+```sh
+./linux/setup.py prepare --compiler /path/to/d3dcompiler_47.dll --model-e \
+  --dlss /path/to/a/game/nvngx_dlss.dll      # NVIDIA's DLSS 310.7.0 DLL you already have
+# or, to download NVIDIA's DLL from NVIDIA's GitHub under NVIDIA's licence:
+./linux/setup.py prepare --compiler /path/to/d3dcompiler_47.dll --model-e --accept-nvidia-dlss-license
+```
+
+`runtimes.build_model_e` downloads the pinned HelixSR 1.8.1 release and
+Microsoft's DXC 1.9.2607 (the build HelixSR's Linux setup uses), checks both and
+NVIDIA's DLL against pinned SHA-256 digests, and runs HelixSR's
+`setup/helixsr_setup.py` with the system's Python 3 and numpy. DXC is the Windows
+build, run through Steam's Proton or the system's Wine in a throwaway prefix;
+absolute paths are passed as `Z:` paths. Python settings of the packaged manager
+are not passed on. The result, HelixSR's DLL with the network appended, is kept
+in the download cache under `model-e/HelixSR-1.8.1/` with a build record and
+reused; NVIDIA's DLL, the extracted release and the prefix are deleted.
+
+The 0.3.5.6 host loads Model E when `[Upscalers] FfxSRProvider=helix_e` and
+`[Libraries] HelixSRPath` names its folder (absolute or relative to the host DLL).
+It first checks a receipt, `amdnr-helix-e.ini`, beside two copies of HelixSR's
+DLL: exactly the keys `Schema=1`, `Provider=HelixSR`, `Model=E`, `MainSHA256`
+(of `amd_fidelityfx_dx12.dll`) and `SR_SHA256` (of
+`amd_fidelityfx_upscaler_dx12.dll`) under `[HelixSR]`, in lowercase hex. Staging
+writes `AMDNR-SR-E/` with both copies, the receipt and HelixSR's notices, sets the
+two keys, and refuses a host binary that does not read the receipt (0.3.5.5R4 and
+older, and the pre-SR host). `manage.py stage --model-e DIR` stages a folder
+built this way. If Model E cannot start, the host runs the game's FSR provider.
 
 ## Install in a Steam game
 
@@ -290,6 +331,12 @@ suite checks exit status and an explicit success marker for every executable:
     materially from the NR-disabled baseline.
 11. With `--optipatcher ASI`, the host runs load `OptiScaler/plugins/OptiPatcher.asi` (where
     the released host searches) and must log it.
+12. With `--model-e DIR` (a Model E built by `setup.py`), three more 720-frame
+    host runs use the FSR 3.1 path: plain FSR 3.1, Model E, and Model E with lmxxf
+    NR. The Model E runs stage the same `AMDNR-SR-E/` layout and receipt as a game
+    install, require the host to log the verified receipt and an accepted HelixSR
+    context, require `network running` in `helixsr.log`, and require Model E's
+    output to differ materially from FSR 3.1 on the same frames.
 
 Without a connected monitor KWin's Xwayland reports a 0×0 screen and Wine's
 Vulkan instance creation blocks. Run the suite inside a nested session, for
@@ -348,7 +395,12 @@ Proton-Wineland 11.0 (2026-09-30) on the same card, with the bridge unchanged
 from v0.3.0-preview: in each 720-frame host run lmxxf composed 597 fresh outputs
 in a 599-frame reporting window (mean absolute RGB change 0.0256 from the NR-off
 baseline), danielblnc 0.6.0 completed every pass (700–717) with no timeouts, and
-OptiPatcher loaded.
+OptiPatcher loaded. With Model E (HelixSR 1.8.1 built here from NVIDIA's DLSS
+310.7.0 DLL), the host verified the receipt and created HelixSR's context,
+HelixSR's network ran on all 720 frames (19 launches per frame, wave64 network
+kernels on RDNA 4), its output differed from FSR 3.1 on 16.6% of output channels
+(mean absolute change 0.0013 on the synthetic scene), and Model E with lmxxf NR
+passed the same composition checks as lmxxf alone.
 The 0.3.5.5R4 runtime also passes 120 frames at 1720x720 with the full network,
 temporal history, and runtime controls enabled. The concurrent exception test
 reproduces a failure without the signal guard and passes with it.
@@ -459,7 +511,7 @@ external memory/semaphore handle type.
 | Unsupported-game notices, anti-cheat and conflict checks, route notes | Shown before installing; blocking cases ask for confirmation. First-install INI seeds: GTA V Enhanced `Spoofing Dxgi=false`, RE9 `Menu OverlayMenu=false`. |
 | Collect logs | Save logs adds `amd_presr.log`, `dlssnr_on_amd.log/.ini`, `amdnr_crash.log` and the component list. |
 | AMDNR hosts 0.3.4.2, 0.3.5.5R4 and 0.3.5.6 | Supported; 0.3.5.6 is the default. Older hosts are not pinned. 0.3.5.6 is pinned to its GitHub release asset (`e7ffc096…`, 753,230,845 bytes), which upstream's manifest now names too. Its host drives the same danielblnc runtimes as 0.3.5.5R4, and its lmxxf runtime needs no further bridge exports. |
-| Model E (HelixSR by lonewolf0622), new in 0.3.5.6 | Not in this release. HelixSR runs as D3D12 compute shaders without HIP, and its author develops it on Proton, so it would run through vkd3d-proton rather than the bridge. Its network has to be built on the user's PC by HelixSR's own setup scripts from NVIDIA's DLSS DLL (Python 3 with numpy; Microsoft's Windows shader compiler through Wine). The 0.3.5.6 host then loads it from `[Libraries] HelixSRPath` with `[Upscalers] FfxSRProvider=helix_e`, only after a receipt beside the two provider DLLs matches their SHA-256. |
+| Model E (HelixSR by lonewolf0622), new in 0.3.5.6 | Supported as an option (see "Optional upscaler: Model E"): built on the user's PC by HelixSR's own setup scripts, after a notice in the manager; needs Python 3 with numpy and Proton or Wine. Staged as `AMDNR-SR-E/` with the receipt the 0.3.5.6 host checks. The automated host pipeline passes with it on RX 9070 XT, alone and with lmxxf. No gameplay report yet. AMDNR's own "AMD SDK" package for HelixSR is not used: it is published only on AMDNR's own server, not on GitHub, and upscaling does not need it. |
 | Model L (d4r by countervolts), new in 0.3.5.6 | Not supported. d4r 0.1.4's Windows package ships its own Windows HIP 7.17 runtime, which needs AMD's Windows kernel driver, and the 0.3.5.6 host loads that copy from d4r's folder by full path. The bridge's `amdhip64_7.dll` cannot stand in: d4r's ZLUDA `nvcuda.dll` imports 99 HIP functions and the bridge exports 39 of them. The missing ones include texture and surface objects, arrays, synchronous copies and fills, occupancy queries and graph updates. d4r's own Linux build needs its patched vkd3d-proton as the game's `d3d12.dll`, which this fork already replaces with its own. |
 | nvngx.dll_dlssnr.dll forwarder | Not applicable: it only serves NVIDIA's own DLSS-NR snippet. |
 | AMDNR Anywhere (Magpie capture host) | Not supported: it depends on Windows window capture that Wine/DXVK do not implement. |
