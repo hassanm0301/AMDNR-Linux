@@ -10,6 +10,7 @@ import shutil
 import sys
 import fcntl
 import tempfile
+from proxies import read_config
 
 def launch_status(bundle, message):
     """Keep the last wrapper result when Steam hides its terminal output."""
@@ -185,6 +186,7 @@ def restore_prefixes(bundle, force=False):
 def environment(bundle, original):
     env = original.copy()
     root = bundle.resolve()
+    proxy = read_config(root).removesuffix(".dll")
     legacy = root / "x86_64-unix/amdhip64_7.dll.so"
     if legacy.exists() or legacy.is_symlink():
         raise ValueError("Legacy ELF HIP bridge found. Reinstall the current PE/Unixlib package before launching.")
@@ -205,7 +207,7 @@ def environment(bundle, original):
     env["WINEDLLPATH"] = str(root) + (":" + env["WINEDLLPATH"] if env.get("WINEDLLPATH") else "")
     # vkd3d-proton devices require DXVK's DXGI. Wine's built-in DXGI uses
     # Wine vkd3d's different device ABI and crashes when creating a swapchain.
-    overrides = "amdhip64_7=b;dxgi=n;winmm,d3d12,d3d12core,d3dcompiler_47=n,b"
+    overrides = f"amdhip64_7=b;dxgi=n;{proxy},d3d12,d3d12core,d3dcompiler_47=n,b"
     env["WINEDLLOVERRIDES"] = (env["WINEDLLOVERRIDES"] + ";" if env.get("WINEDLLOVERRIDES") else "") + overrides
     return env
 

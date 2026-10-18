@@ -15,6 +15,29 @@ The independent UI lives in `linux/native_launcher`; it uses no upstream launche
 source. See `linux/build-native-launcher.py` to build the portable app. The build tools below
 are needed only when compiling from source or running GPU tests.
 
+The launcher builder also accepts an `.AppImage` output. From an assembled addon
+release (the folder containing `RELEASE-MANIFEST.json`), run:
+
+```sh
+python3 linux/build-native-launcher.py \
+  --release-root /path/to/AMDNR-Linux-v0.3.0-preview \
+  --version 0.3.0-preview \
+  --output linux/build/AMDNR-Linux-Manager-v0.3.0-preview-x86_64.AppImage
+```
+
+This packages the same Python, Qt, addon, notices and corresponding Qt source as
+the portable archive. The AppImage tool and runtime are versioned and verified
+against pinned SHA-256 checksums; the runtime is supplied explicitly so the tool
+does not download an unpinned runtime. Building does not require FUSE. The existing
+`.tar.gz` output remains available. Match `--version` to the assembled release;
+stable builds require matching manifest and app versions.
+
+Make the resulting AppImage executable and open it. On systems without usable
+FUSE, run `./AMDNR-Linux-Manager-v0.3.0-preview-x86_64.AppImage --appimage-extract-and-run`.
+Host requirements remain glibc 2.34+, the GCC 11 C++ runtime, and an X11/Wayland
+desktop with graphics drivers. Settings, downloads and the persistent game Python
+runtime stay in the same user data/cache directories used by portable releases.
+
 **Status: working in tested games; experimental compatibility.** Stellar Blade
 now loads the player's existing Steam save and runs neural rendering on RX 9070 XT
 with GE-Proton11-9. The player confirmed normal-looking gameplay, and fresh model
@@ -58,8 +81,9 @@ Their CPU/compiler checks are described in
 The private runtime download contains the required ROCm libraries, approximately
 186 MiB extracted. It does not install packages, run package scripts, change the
 system driver, or require root. ROCm headers/compiler are build dependencies only.
-The danielblnc runtime, AMDNR Anywhere, frame generation, and Ray Regeneration
-are outside this bridge's current validation coverage.
+danielblnc's runtime is optional (see below) and passes the automated host
+pipeline test; it has no gameplay report on Linux yet. AMDNR Anywhere, frame
+generation and Ray Regeneration are outside this bridge's validation coverage.
 
 ## Build and stage
 
@@ -95,6 +119,54 @@ uses an isolated checkout at `linux/deps/vkd3d-proton`; `AMDNR_VKD3D_SOURCE` can
 point to another checkout at that exact revision. `AMDNR_BUILD_JOBS` defaults to 8.
 Omit `--rocm` only when the game can access a compatible system ROCm 7 installation.
 
+## Optional components: danielblnc's runtime and OptiPatcher
+
+AMDNR can drive two neural runtimes. **lmxxf** is built into the AMDNR archive
+and is the default. **DLSS-NR on AMD by Daniel Blanco (danielblnc)** ships as
+separate `vX.Y.Z-Runtime.zip` files on AMDNR's releases; AMDNR distributes it
+unmodified with his permission and all rights stay with him. This fork never
+republishes it: setup downloads the pinned archive from AMDNR's release only
+when you ask for it, checks the archive digest, extracts exactly the three pass
+DLLs, the weights and his notices, and checks every pass DLL against its pinned
+digest. **OptiPatcher** (OptiScaler project) is an optional ASI plugin that
+patches supported games so they offer upscaler inputs on AMD; it is fetched from
+its GitHub release, verified, placed in `OptiScaler/plugins/` and enabled with
+`[Plugins] LoadAsiPlugins=true`.
+
+```sh
+./linux/setup.py prepare --compiler /path/to/d3dcompiler_47.dll \
+  --daniel-runtime 0.6.0 --optipatcher
+./linux/manage.py stage --archive AMDNR-v0.3.5.5R4.zip --compiler d3dcompiler_47.dll \
+  --rocm linux/build/rocm --output linux/build/package \
+  --daniel-runtime v0.6.0-Runtime.zip --optipatcher OptiPatcher_v0.41.asi
+```
+
+| danielblnc | Archive SHA-256 | Pass DLL SHA-256 | GPUs offered | Hosts |
+| --- | --- | --- | --- | --- |
+| 0.6.0 | `d2bb1702…351f7e` | `195c4a89…775721` | RDNA 4, 3, 2 | 0.3.5.5R4 |
+| 0.5.1 | `ed4c4deb…129292` | `493b4a3b…48acd` | RDNA 4, 3 | 0.3.5.5R4 |
+| 0.5.0 | `7a49ab0e…e56ed46f` | `cddfb09e…aec31a` | RDNA 4, 3 | both |
+| 0.4.3 | `07dd7774…4b231e` | `d1e32086…a67a457` | RDNA 4, 3 | both |
+| 0.4.1 | `d6aa1ff2…e4d492` | `823063eb…b1d376` | RDNA 4, 3 | both |
+| 0.4.0 | `15ebed60…5b973` | `d62be3d8…798b80` | RDNA 4, 3 | both |
+
+Full digests are in `linux/runtimes.py`. The AMDNR host pins the SHA-256 of every
+pass DLL it can drive, so staging reads compatibility from the host binary itself
+and refuses a pairing the host would reject at run time (0.3.4.2 drives up to
+0.5.0). Staging selects `[DlssNr] NrBackend=daniel` and records the components in
+`amdnr-linux/components.json`. Both runtimes stay installed side by side, so the
+in-game Neural tab can still switch back to lmxxf. GPU filtering uses the ROCm
+KFD topology: integrated GPUs (including handheld APUs) are not offered danielblnc.
+
+danielblnc's DLLs are HIP-compiled modules. Besides the HIP API used by lmxxf,
+they need the compiler's module ABI: `__hipRegisterFatBinary`,
+`__hipRegisterFunction`, `__hipRegisterVar`, `__hipUnregisterFatBinary`,
+`__hipPushCallConfiguration`/`__hipPopCallConfiguration`, `hipLaunchKernel`,
+`hipMemcpyToSymbol`, `hipOccupancyMaxActiveBlocksPerMultiprocessor` and
+`hipDeviceGetStreamPriorityRange`. The bridge exports all of them (see
+`bridge/registration.c`); every amdhip64_7.dll import of runtimes 0.4.0–0.6.0 is
+covered.
+
 ## Install in a Steam game
 
 Close the game. Install beside the actual game executable (for Unreal games this
@@ -116,7 +188,10 @@ MANGOHUD=1 gamemoderun "/path/to/game/executable/directory/amdnr-linux/run.sh" %
 It does not create a replacement game prefix. Running the executable directly
 can omit Steam's account context and make existing saves appear absent even when
 they are still on disk. For non-Steam Wine use, set the intended `WINEPREFIX`
-explicitly and pass the full Wine command to `run.sh`.
+explicitly and pass the full Wine command to `run.sh`. Heroic and Lutris already
+do both when `run.sh` is their wrapper or command prefix: Heroic passes
+`WINEPREFIX` (or, for Proton, `STEAM_COMPAT_DATA_PATH`) and Lutris passes
+`WINEPREFIX`.
 
 At first launch the wrapper installs the PE HIP bridge and the supplied
 native shader compiler into that prefix's `system32`. It backs up the old compiler
@@ -197,6 +272,24 @@ suite checks exit status and an explicit success marker for every executable:
    existing thread and a new thread before/after loading the bridge. It requires
    an exact recognized Wine/Linux stub and explicitly skips unsupported layouts;
    a skip is never reported as a pass. The old ELF bridge fails this comparison.
+9. The hipcc module ABI used by danielblnc's runtime: a real offload bundle is
+   registered once before `hipInit` (lazy) and once from a DLL constructor under
+   the loader lock (eager); kernels launch through push/pop call configuration
+   and `hipLaunchKernel`; registered constants and device variables round-trip
+   through the symbol APIs; occupancy and stream priorities are queried; and the
+   DLL's destructor unregisters its copy while the other keeps running.
+10. With `--daniel-runtime DIR` (implies `--host-pipeline`), a third 720-frame
+    host run uses `NrBackend=daniel` with that folder's pass DLLs and weights. It
+    requires fresh completed jobs in `amd_presr.log` and output that differs
+    materially from the NR-disabled baseline.
+11. With `--optipatcher ASI`, the host runs load `OptiScaler/plugins/OptiPatcher.asi` (where
+    the released host searches) and must log it.
+
+Without a connected monitor KWin's Xwayland reports a 0×0 screen and Wine's
+Vulkan instance creation blocks. Run the suite inside a nested session, for
+example `kwin_wayland --virtual --xwayland --exit-with-session "./linux/test.py …"`.
+The host test also waits for the released host's GPU identification thread
+before creating its own DXGI factory; the two can otherwise deadlock under DXVK.
 
 Each run writes `results.json` with individual pass/skip/fail outcomes, settings,
 Proton version, and hashes of the rendering and bridge binaries. Tests use their
@@ -329,9 +422,37 @@ callbacks use only pthread synchronization, never Win32 APIs. Pending jobs hold
 fence references; stream destruction drains and joins the worker. Neural graph
 capture remains supported, but capturing external fence waits/signals is rejected.
 
-The bridge is deliberately scoped to the runtime's HIP API and D3D12 shared
+HIP-compiled modules register their embedded offload bundle, kernels and
+variables from static constructors. The wrapper, its bundle, kernel names and
+host-stub addresses are ordinary process memory that native ROCm can read, and
+the bundle's amdgcn code objects are the same for Windows and Linux, so
+`registration.c` forwards the pointers after validating the wrapper magic.
+`dim3` launch shapes are passed by value; each compiled half lowers its own ABI
+(by reference on Windows, in registers on SysV). Unregistration during process
+shutdown is skipped: Wine has already ended the other Windows threads, possibly
+inside HIP, and the exiting process releases the code objects anyway.
+
+The bridge is deliberately scoped to the runtimes' HIP API and D3D12 shared
 buffers/fences. It is not a general replacement for every Windows ROCm API or
 external memory/semaphore handle type.
+
+## Upstream feature coverage
+
+| Upstream (Windows) | Linux fork |
+| --- | --- |
+| lmxxf runtime | Supported and game-tested (Stellar Blade, Dragon's Dogma 2, The Witcher 3). |
+| danielblnc runtimes 0.4.0–0.6.0, GPU-based choice | Supported in setup, staging and the launcher; automated host pipeline passes for every version on RX 9070 XT. No gameplay report yet. |
+| OptiPatcher 0.41 / 0.40 | Supported (optional, per game); load verified in the host test, game patching depends on OptiPatcher's own game list. |
+| Per-game DLL name rules, mod-loader protection | Automatic selection skips occupied names; Cyberpunk 2077 prefers `wininet.dll`, Marvel's Spider-Man `dbghelp.dll`. `dxgi`/`d3d11`/`d3d12` stay reserved for DXVK/vkd3d. |
+| Unsupported-game notices, anti-cheat and conflict checks, route notes | Shown before installing; blocking cases ask for confirmation. First-install INI seeds: GTA V Enhanced `Spoofing Dxgi=false`, RE9 `Menu OverlayMenu=false`. |
+| Collect logs | Save logs adds `amd_presr.log`, `dlssnr_on_amd.log/.ini`, `amdnr_crash.log` and the component list. |
+| AMDNR hosts 0.3.4.2 and 0.3.5.5R4 | Supported. Older hosts are not pinned. 0.3.5.6 is not pinned yet: as of 2026-10-18 its GitHub asset (`e7ffc096…`, 753,230,845 bytes) is still not the archive upstream's own manifest pins (`44ef8b2e…`, 753,231,620 bytes). Its host drives the same danielblnc runtimes as 0.3.5.5R4, and its lmxxf runtime needs no further bridge exports. |
+| Model E (HelixSR by lonewolf0622), new in 0.3.5.6 | Not yet; it needs the 0.3.5.6 host. HelixSR runs as D3D12 compute shaders without HIP, and its author develops it on Proton, so it would run through vkd3d-proton rather than the bridge. HelixSR's own setup has to build its network on the user's PC from NVIDIA's DLSS DLL (Python 3 with numpy; the shader compiler runs through Proton). |
+| Model L (d4r by countervolts), new in 0.3.5.6 | Not supported. d4r 0.1.4's Windows package ships its own Windows HIP 7.17 runtime, which needs AMD's Windows kernel driver, and the 0.3.5.6 host loads that copy from d4r's folder by full path. The bridge's `amdhip64_7.dll` cannot stand in: d4r's ZLUDA `nvcuda.dll` imports 99 HIP functions and the bridge exports 39 of them. The missing ones include texture and surface objects, arrays, synchronous copies and fills, occupancy queries and graph updates. d4r's own Linux build needs its patched vkd3d-proton as the game's `d3d12.dll`, which this fork already replaces with its own. |
+| nvngx.dll_dlssnr.dll forwarder | Not applicable: it only serves NVIDIA's own DLSS-NR snippet. |
+| AMDNR Anywhere (Magpie capture host) | Not supported: it depends on Windows window capture that Wine/DXVK do not implement. |
+| TheAutomatic's "OptiScaler AMD pre-SR" 1.9.1-alpha (alternate host) | Supported as an optional host build in setup (`--host presr`), staging and the launcher; AMDNR stays the default. It drives danielblnc 0.3.1 only (it identifies danielblnc's own 0.2.17–0.3.1 builds by digest, not 0.4.0+), which is downloaded from AMDNR's Alpha0.3.3 release. Its own lmxxf backend is not offered: its weights are not published anywhere that can be pinned. Its Setup/Uninstall scripts and READMEs are not installed; licences are. The automated host pipeline passes on RX 9070 XT (danielblnc 0.3.1: 577/577 passes, no timeouts; OptiPatcher loads). One of five runs hung once at host start-up and did not reproduce. No gameplay report yet. |
+| Epic/GOG/Amazon and other stores | Discovered read-only through Heroic (Epic Games via legendary, GOG, Amazon via nile, sideloaded apps) and Lutris (Wine runner), native and Flatpak. The game's directory is found as for Steam games, falling back to the store's own launch target. The manager shows the wrapper line to add in Heroic (Wrapper command) or Lutris (Command prefix) and checks it on rescan, but never edits either launcher's settings. Other non-Steam games can be added manually. |
 
 ## Producing release assets
 

@@ -25,7 +25,7 @@ class ControllerTests(unittest.TestCase):
         self.root, self.game_dir = self.fixture.root, self.fixture.game
         release = self.root / "release"
         (release / "linux").mkdir(parents=True)
-        for name in ("launch.py", "manage.py", "setup.py"):
+        for name in ("launch.py", "manage.py", "setup.py", "proxies.py"):
             shutil.copy2(ROOT / name, release / "linux" / name)
         (release / "RELEASE-MANIFEST.json").write_text(json.dumps({"release": "linux-v0.2.0"}))
         self.steam_root = self.root / "Steam"
@@ -36,7 +36,7 @@ class ControllerTests(unittest.TestCase):
         self.game = steam.SteamGame("123", "Fixture Game", self.game_dir, self.steam_root,
                                     self.root / "library", self.game_dir)
         self.app = controller.Controller(release, self.root / "controller state", self.root / "controller cache",
-                                         [self.steam_root])
+                                         [self.steam_root], heroic_roots=[], lutris_roots=[])
         self.app.games = [self.game]
         self.package = self.fixture.a
         for replacement in (patch.object(steam, "steam_is_running", return_value=False),
@@ -81,6 +81,61 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(backend_fixture.snapshot(self.game_dir), self.fixture.initial)
         self.assertFalse(self.app.pending_operation(self.game))
         self.assertIsNone(self.app.backend.operation_receipt(self.game_dir))
+
+    def test_select_switch_repair_and_remove_proxy_without_redownload(self):
+        self.app.operate("install", self.game, proxy="version.dll")
+        self.assertEqual(self.app.inspect(self.game)["proxy_name"], "version.dll")
+        self.assertFalse((self.game_dir / "winmm.dll").exists())
+        original_options = self.config.read_bytes()
+        with patch.object(self.app, "prepare", side_effect=AssertionError("Unexpected preparation")):
+            self.app.operate("switch_proxy", self.game, proxy="dbghelp.dll")
+            self.app.operate("switch_proxy", self.game, proxy="next")
+        self.assertEqual(self.app.inspect(self.game)["proxy_name"], "winmm.dll")
+        self.assertEqual(self.config.read_bytes(), original_options)
+        self.assertEqual(self.app.backend.operation_receipt(self.game_dir)["action"], "switch_proxy")
+        self.app.operate("repair", self.game)
+        self.assertEqual(self.app.inspect(self.game)["proxy_history"], ["version.dll", "dbghelp.dll", "winmm.dll"])
+        self.app.operate("uninstall", self.game)
+        self.assertEqual(self.config.read_bytes(), self.config_before)
+        self.assertEqual(backend_fixture.snapshot(self.game_dir), self.fixture.initial)
+
+    def test_proxy_switch_failure_restores_files_and_launch_options(self):
+        self.app.operate("install", self.game)
+        before = backend_fixture.snapshot(self.game_dir)
+        options = self.config.read_bytes()
+        apply = self.app.backend._apply
+        calls = 0
+
+        def fail(operation):
+            nonlocal calls
+            apply(operation)
+            calls += 1
+            if calls == 2:
+                raise OSError("failed proxy switch")
+
+        with patch.object(self.app.backend, "_apply", side_effect=fail):
+            with self.assertRaisesRegex(OSError, "failed proxy switch"):
+                self.app.operate("switch_proxy", self.game, proxy="version.dll")
+        self.assertEqual(backend_fixture.snapshot(self.game_dir), before)
+        self.assertEqual(self.config.read_bytes(), options)
+        self.assertFalse(self.app.pending_operation(self.game))
+
+    def test_proxy_switch_error_after_commit_preserves_both_layers(self):
+        self.app.operate("install", self.game)
+        switch = self.app.backend.switch_proxy
+
+        def fail(*args, **kwargs):
+            switch(*args, **kwargs)
+            raise OSError("post-commit switch error")
+
+        with patch.object(self.app.backend, "switch_proxy", side_effect=fail):
+            with self.assertRaisesRegex(OSError, "post-commit switch error"):
+                self.app.operate("switch_proxy", self.game, proxy="version.dll")
+        self.assertEqual(self.app.inspect(self.game)["proxy_name"], "version.dll")
+        self.assertIn(b"amdnr-linux/run.sh", self.config.read_bytes())
+        self.assertFalse(self.app.pending_operation(self.game))
+        self.app.operate("uninstall", self.game)
+        self.assertEqual(self.config.read_bytes(), self.config_before)
 
     def test_install_error_after_commit_keeps_files_and_steam_consistent(self):
         install = self.app.backend.install
@@ -237,11 +292,38 @@ class ControllerTests(unittest.TestCase):
         private = self.root / "private.txt"
         private.write_text("unrelated private data")
         (self.game_dir / "OptiScaler.log").symlink_to(private)
+        (self.game_dir / "re2_framework_log.txt").symlink_to(private)
         destination = self.root / "logs.zip"
         self.app.collect_logs(self.game, destination)
         with zipfile.ZipFile(destination) as output:
             self.assertNotIn("OptiScaler.log", output.namelist())
+            self.assertNotIn("re2_framework_log.txt", output.namelist())
             self.assertNotIn(b"unrelated private data", output.read("diagnostics.json"))
+
+    def test_log_export_includes_reframework_and_bounds_large_logs(self):
+        log = self.game_dir / "re2_framework_log.txt"
+        data = b"REFramework startup\n" * 2000 + b"Waiting for startup\n"
+        log.write_bytes(data)
+        destination = self.root / "logs.zip"
+        self.app.collect_logs(self.game, destination)
+        with zipfile.ZipFile(destination) as output:
+            self.assertEqual(output.read(log.name), data)
+            details = json.loads(output.read("diagnostics.json"))
+            framework = next(entry for entry in details["startup_evidence"] if entry["name"] == log.name)
+            self.assertEqual(framework["tail"], data[-16384:].decode())
+            self.assertTrue(framework["truncated"])
+        # An oversized full log is excluded, but its bounded tail remains useful.
+        with log.open("r+b") as stream:
+            stream.truncate(50 * 1024**2)
+            stream.seek(-len(data), os.SEEK_END)
+            stream.write(data)
+        self.app.collect_logs(self.game, destination)
+        with zipfile.ZipFile(destination) as output:
+            self.assertNotIn(log.name, output.namelist())
+            details = json.loads(output.read("diagnostics.json"))
+            framework = next(entry for entry in details["startup_evidence"] if entry["name"] == log.name)
+            self.assertEqual(framework["tail"], data[-16384:].decode())
+            self.assertTrue(framework["truncated"])
 
 
 class PersistentRuntimeTests(unittest.TestCase):

@@ -1,0 +1,10 @@
+#!/usr/bin/env xdg-open
+[Desktop Entry]
+Type=Application
+Name=AMDNR Linux Manager
+Comment=Install and manage AMDNR neural rendering for Linux games
+Exec=AppRun
+Icon=amdnr-linux-manager
+Terminal=false
+Categories=Game;Utility;
+StartupNotify=true

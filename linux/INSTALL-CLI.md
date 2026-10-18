@@ -84,6 +84,41 @@ python3 linux/setup.py prepare \
 An existing output folder is never overwritten. Reuse the prepared package for
 another game, or specify a different `--output` directory when preparing again.
 
+Current development builds can also stage danielblnc's runtime (DLSS-NR on AMD
+by Daniel Blanco, downloaded unmodified from AMDNR's release) and OptiScaler's
+OptiPatcher plugin:
+
+```sh
+python3 linux/setup.py prepare --compiler "/path/to/d3dcompiler_47.dll" \
+  --daniel-runtime 0.6.0 --optipatcher
+```
+
+`--daniel-runtime` accepts 0.6.0, 0.5.1, 0.5.0, 0.4.3, 0.4.1 or 0.4.0 and selects
+`[DlssNr] NrBackend=daniel`; the lmxxf runtime stays installed beside it. Use
+0.4.0–0.6.0 on RDNA 4/RDNA 3 and 0.6.0 on RDNA 2; integrated GPUs are not
+supported by danielblnc's runtime. Preparation refuses a runtime the AMDNR host
+does not pin. `--optipatcher` (optionally with a version, 0.41 or 0.40) places
+the plugin in `OptiScaler/plugins/` and sets `[Plugins] LoadAsiPlugins=true`. Every archive
+and file is checked against pinned SHA-256 digests. Check danielblnc's own
+`amd_presr.log` and `dlssnr_on_amd.log` instead of `lmxxf_backend.log` when you
+use his runtime.
+
+To use TheAutomatic's "OptiScaler AMD pre-SR" 1.9.1-alpha host instead of
+AMDNR's, add `--host presr`:
+
+```sh
+python3 linux/setup.py prepare --compiler "/path/to/d3dcompiler_47.dll" --host presr
+```
+
+This independent OptiScaler fork runs danielblnc's runtime only, and only
+danielblnc's own 0.3.1 build, so `--daniel-runtime` defaults to 0.3.1 and
+refuses any other version (0.3.1 is not offered with the AMDNR host).
+`--archive` then takes the pinned `OptiScaler-AMD-PreSR-1.9.1-alpha.zip`. The
+package contains the host, its `OptiScaler/` folder, `experimental_lighting/`
+shaders and `Licenses/`. Its Windows `Setup`/`Uninstall` scripts, READMEs and
+lmxxf files are left out: its lmxxf backend needs weights that are not
+published anywhere that can be pinned. `--optipatcher` works with it too.
+
 ## 3. Install beside the actual game executable
 
 In Steam, use **Properties → Installed Files → Browse** to find the game.
@@ -107,6 +142,31 @@ option. Paste that option into **Properties → General → Launch Options**:
 ```text
 "/path/to/game/executable/directory/amdnr-linux/run.sh" %command%
 ```
+
+Current development builds also accept `--proxy auto` (the default),
+`winmm.dll`, `version.dll`, `dbghelp.dll`, `wininet.dll`, or `winhttp.dll`.
+Automatic selection skips occupied names and prefers a DLL imported by the main
+executable. Supply `--exe "/path/to/game/Game.exe"` when several executables share
+the folder. For example:
+
+```sh
+python3 linux/manage.py install linux/build/package "/path/to/game" --proxy version.dll
+```
+
+With the game closed, change an installed proxy without downloading again:
+
+```sh
+python3 linux/manage.py switch-proxy "/path/to/game" --proxy next
+python3 linux/manage.py switch-proxy "/path/to/game" --proxy dbghelp.dll
+```
+
+The command skips previously tried names and refuses occupied slots. Once the
+untried choices are exhausted, choose a free name explicitly. The wrapper reads
+the managed `amdnr-linux/proxy.json`; do not rename DLLs by hand. Older packages
+need to be prepared again with the current scripts before using alternatives.
+For Steam games managed by the graphical launcher, use its controls to retain
+coordinated Steam recovery. These commands are not present in v0.2.0 above.
+Graphics DLL names (`dxgi`, `d3d11`, `d3d12`, `d3d12core`) are reserved.
 
 If MangoHud and GameMode already work for this game, retain them:
 
@@ -140,7 +200,8 @@ Move around, compare Home on/off, and check loading, menus, and image quality.
 Neural rendering has a substantial GPU cost: the tested kernel time was about
 11–13 ms, in addition to the rest of the game's rendering. Frame generation,
 Ray Regeneration, AMDNR Anywhere, and the danielblnc backend are outside this
-release's validation coverage.
+release's validation coverage. (Current development builds add the danielblnc
+runtime and test it in the automated host pipeline; see above.)
 
 ## Update or uninstall
 
@@ -174,12 +235,14 @@ python3 linux/manage.py uninstall "/path/to/game/executable/directory" --force
 | No HIP device / no neural frames | Check RX 9070 XT support, GPU device permissions, private ROCm files, and `lmxxf_backend.log`. A working Vulkan game alone does not establish ROCm access. |
 | Shader compilation fails | Supply a native **x64 Microsoft** compiler; the known-good version is 10.0.14393.795. Do not use Wine's builtin DLL or a random DLL download site. |
 | Crash when rendering begins | Use the tested Proton version; disable conflicting mods. Compare with `[DlssNr] Enabled=false` in `OptiScaler.ini`, keeping the same prefix. Preserve logs from both runs. |
+| RE9 stays black before rendering begins | Check `re2_framework_log.txt` for a stop at `Scanning DD2...` after thread suspension. Older REFramework builds have a known Proton deadlock; see the [REFramework troubleshooting note](INSTALL.md#troubleshooting-and-downloads). |
 | Unsupported Wine Vulkan object ABI | Use GE-Proton11-9. Other Wine layouts are deliberately rejected rather than guessed. |
 | Flatpak Steam / Steam Deck | Not validated. Flatpak additionally needs access to the game, wrapper, Python, and GPU devices inside its sandbox. This release does not change sandbox permissions. |
 
 For a diagnostic Proton log, temporarily add `PROTON_LOG=1` at the beginning of
 the Steam launch option. Collect `OptiScaler.log`, `lmxxf_backend.log`,
 `amd_bridge.log` if present, your GPU/driver/Proton versions, and the exact symptom.
+For REFramework games, also collect `re2_framework_log.txt`.
 Review logs for personal paths or identifiers before sharing them.
 
 See the [technical guide](https://github.com/hassanm0301/AMDNR-Linux/blob/linux-v0.2.0/linux/README.md)

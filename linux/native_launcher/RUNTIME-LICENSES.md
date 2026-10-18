@@ -8,6 +8,29 @@ upstream Windows launcher is used. The AMDNR integration has separate notices in
 
 AMDNR by 3zwr1 - https://github.com/3zwr1/AMD-NR---OptiScaler
 
+Optional components the manager downloads only when a user chooses them are not
+part of the portable app: danielblnc's runtime (DLSS-NR on AMD by Daniel Blanco,
+all rights reserved, distributed unmodified by AMDNR with his permission), the
+OptiScaler project's OptiPatcher plugin, and TheAutomatic's GPL-3.0 "OptiScaler
+AMD pre-SR" host. See `addon/linux/RELEASE-LICENSES.md`.
+
+## AppImage builds
+
+AppImage builds contain the same runtime, notices and source directories as the
+portable folder. The outer executable uses the
+[AppImage type-2 runtime 20251108](https://github.com/AppImage/type2-runtime/tree/20251108),
+under the MIT license. Its notice and dependency license links (musl, libfuse,
+squashfuse, Zstandard and zlib) are in `runtime/licenses/LICENSE.AppImage-runtime.txt`.
+The exact runtime URL, checksum and source reference are recorded in
+`RUNTIME-MANIFEST.json`; the upstream tree includes build and source instructions.
+The build tool appimagetool 1.9.1 is used only during packaging.
+
+To inspect or modify the bundled files, run `./<file>.AppImage --appimage-extract`,
+then use `squashfs-root/AppRun`. This includes replacing the LGPL Qt libraries as
+described below. `--appimage-extract-and-run` temporarily extracts and runs the
+application on systems without usable FUSE. Installed game wrappers use a
+persistent Python copy outside the mounted or temporarily extracted image.
+
 ## Python
 
 `runtime/python` contains CPython **3.12.15**, built by

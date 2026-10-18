@@ -5,9 +5,9 @@ import os
 import sys
 
 from PySide6.QtCore import QThread, QTimer, Qt, QUrl, QSize, Signal, Slot
-from PySide6.QtGui import QDesktopServices, QFont
+from PySide6.QtGui import QDesktopServices, QFont, QIcon, QPixmap
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel, QLayout, QLineEdit,
+    QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel, QLayout, QLineEdit,
     QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QProgressBar,
     QPushButton, QScrollArea, QSizePolicy, QSplitter, QTextEdit, QVBoxLayout, QWidget,
 )
@@ -15,6 +15,9 @@ from PySide6.QtWidgets import (
 from . import NAME, VERSION
 from .backend import CompilerNeeded
 from . import steam
+from . import stores
+from .artwork import Source
+from .artwork_widgets import ArtworkLoader, Banner, placeholder
 
 BUTTON_HEIGHT = 40
 ROW_HEIGHT = 52
@@ -23,7 +26,7 @@ STYLE = """
 QWidget { background: #11171d; color: #dfe7ec; font-size: 14px; }
 QMainWindow, QDialog { background: #11171d; }
 QFrame#card { background: #19232d; border: 1px solid #2e3b47; border-radius: 10px; }
-QWidget#detailContent, QWidget#settingsContent { background: #19232d; }
+QWidget#detailContent, QWidget#settingsContent, QWidget#proxyPanel, QWidget#componentPanel { background: #19232d; }
 QLabel { background: transparent; }
 QLabel#brand { font-size: 18px; font-weight: 700; color: #ffffff; }
 QLabel#gameTitle { font-size: 25px; font-weight: 700; color: #ffffff; }
@@ -31,8 +34,15 @@ QLabel#muted { color: #9daebb; }
 QLabel#eyebrow { color: #5de1bc; font-size: 12px; font-weight: 700; }
 QLabel#status { color: #5de1bc; font-weight: 600; }
 QLabel#path { color: #aebdca; font-size: 12px; }
+QLabel#notice { color: #f0c987; }
+QCheckBox { background: transparent; spacing: 8px; }
+QCheckBox::indicator { width: 16px; height: 16px; border: 1px solid #607685; border-radius: 4px; background: #1b252f; }
+QCheckBox::indicator:checked { background: #5de1bc; border-color: #5de1bc; }
+QCheckBox::indicator:disabled { border-color: #293640; background: #19232d; }
 QLineEdit { background: #1b252f; border: 1px solid #33424f; border-radius: 7px; padding: 0 10px; }
 QLineEdit:focus { border-color: #5de1bc; }
+QComboBox { background: #1b252f; border: 1px solid #33424f; border-radius: 7px; padding: 0 10px; }
+QComboBox QAbstractItemView { background: #1b252f; selection-background-color: #263d40; }
 QListWidget { background: #141d25; border: 1px solid #2b3742; border-radius: 9px; padding: 5px; outline: none; }
 QListWidget::item { padding: 0 11px; border-radius: 6px; }
 QListWidget::item:selected { background: #263d40; color: #ffffff; }
@@ -249,6 +259,11 @@ class Window(QMainWindow):
         self.game = None
         self.inspection = {}
         self.last_operation = None
+        cache = getattr(controller, "cache_dir", Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "nr-linux-manager")
+        self.artwork = ArtworkLoader(cache / "artwork", self)
+        self.artwork.ready.connect(self.artwork_ready)
+        self.artwork_key = None
+        self.placeholder_icon = QIcon(placeholder())
         self.setWindowTitle(NAME)
         self.resize(1100, 720)
         self.setMinimumSize(800, 600)
@@ -284,6 +299,7 @@ class Window(QMainWindow):
         self.search.textChanged.connect(self.filter_games)
         left_layout.addWidget(self.search)
         self.library = QListWidget()
+        self.library.setIconSize(QSize(76, 38))
         self.library.setUniformItemSizes(True)
         self.library.setSpacing(3)
         self.library.setTextElideMode(Qt.TextElideMode.ElideRight)
@@ -311,13 +327,18 @@ class Window(QMainWindow):
         detail.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         detail.setContentsMargins(22, 22, 22, 22)
         detail.setSpacing(12)
+        self.banner = Banner()
+        self.banner.hide()
+        detail.addWidget(self.banner)
         self.platform = label("LIBRARY", "eyebrow")
         self.title = label("Choose a game", "gameTitle", True)
         self.status = label("Select a game to see its installation.", "status", True)
         self.description = label("Installed Steam games appear automatically. You can also add a game from another library.", "muted", True)
         self.path = label("", "path", True)
         self.path.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        for widget in (self.platform, self.title, self.status, self.description, self.path):
+        self.notices = label("", "notice", True)
+        self.notices.hide()
+        for widget in (self.platform, self.title, self.status, self.description, self.notices, self.path):
             widget.setMinimumWidth(0)
             widget.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
             detail.addWidget(widget)
@@ -344,6 +365,54 @@ class Window(QMainWindow):
             actions.addLayout(row)
         self.uninstall = self.button("Uninstall and restore originals", lambda: self.operate("uninstall"), "danger")
         actions.addWidget(self.uninstall)
+        self.component_panel = QWidget()
+        self.component_panel.setObjectName("componentPanel")
+        component_layout = QVBoxLayout(self.component_panel)
+        component_layout.setContentsMargins(0, 8, 0, 0)
+        component_layout.setSpacing(8)
+        component_layout.addWidget(label("NEURAL RUNTIME AND PLUGINS", "eyebrow"))
+        self.host_choice = QComboBox()
+        self.host_choice.setFixedHeight(BUTTON_HEIGHT)
+        self.host_choice.setAccessibleName("OptiScaler host build")
+        self.host_choice.currentIndexChanged.connect(self.host_changed)
+        component_layout.addWidget(self.host_choice)
+        self.runtime_choice = QComboBox()
+        self.runtime_choice.setFixedHeight(BUTTON_HEIGHT)
+        self.runtime_choice.setAccessibleName("Neural runtime")
+        self.runtime_choice.currentIndexChanged.connect(self.controls)
+        component_layout.addWidget(self.runtime_choice)
+        self.optipatcher_check = QCheckBox("OptiPatcher plugin (OptiScaler project)")
+        self.optipatcher_check.toggled.connect(self.controls)
+        component_layout.addWidget(self.optipatcher_check)
+        self.component_note = label("", "muted", True)
+        component_layout.addWidget(self.component_note)
+        self.components_apply = self.button("Apply runtime and plugin", self.apply_components)
+        component_layout.addWidget(self.components_apply)
+        actions.addWidget(self.component_panel)
+        self.component_panel.hide()
+        self.proxy_toggle = self.button("Advanced compatibility ▾", self.toggle_proxy)
+        actions.addWidget(self.proxy_toggle)
+        self.proxy_panel = QWidget()
+        self.proxy_panel.setObjectName("proxyPanel")
+        proxy_layout = QVBoxLayout(self.proxy_panel)
+        proxy_layout.setContentsMargins(0, 0, 0, 0)
+        proxy_layout.setSpacing(8)
+        self.proxy_summary = label("", "muted", True)
+        proxy_layout.addWidget(self.proxy_summary)
+        self.proxy_choice = QComboBox()
+        self.proxy_choice.setFixedHeight(BUTTON_HEIGHT)
+        self.proxy_choice.setAccessibleName("Loading DLL")
+        self.proxy_choice.currentIndexChanged.connect(self.controls)
+        proxy_layout.addWidget(self.proxy_choice)
+        proxy_buttons = QHBoxLayout()
+        self.proxy_apply = self.button("Use selected DLL", lambda: self.operate("switch_proxy"))
+        self.proxy_next = self.button("Try next DLL", lambda: self.operate("next_proxy"))
+        proxy_buttons.addWidget(self.proxy_apply)
+        proxy_buttons.addWidget(self.proxy_next)
+        proxy_layout.addLayout(proxy_buttons)
+        proxy_layout.addWidget(label("If OptiScaler does not open, try another loading DLL, then launch the game again. Names used by other files are unavailable.", "muted", True))
+        actions.addWidget(self.proxy_panel)
+        self.proxy_panel.hide()
         detail.addWidget(self.actions)
         self.install_hint = label("Close the game and Steam before changing its installation.", "muted", True)
         detail.addWidget(self.install_hint)
@@ -403,9 +472,170 @@ class Window(QMainWindow):
                   self.inspection.get("health_issues") or
                   (installed and (self.inspection.get("missing") or self.inspection.get("modified"))) or
                   self.controller.pending_operation(self.game)) if selected else False
-        self.launch.setEnabled(bool(selected and self.game.appid and not self.busy and not unsafe))
+        store = stores.store_name(self.game) if selected else None
+        launch_issue = stores.launch_issue(self.game, installed) if store else None
+        self.launch.setText(f"Launch in {store or 'Steam'} ↗")
+        self.launch.setToolTip(launch_issue or "")
+        self.launch.setEnabled(bool(selected and (self.game.appid or (store and not launch_issue))
+                                    and not self.busy and not unsafe))
         self.folder.setEnabled(bool(resolved and not self.busy))
         self.logs.setEnabled(bool(resolved and not self.busy))
+        can_choose = bool(resolved and not ambiguous and not self.busy and not self.inspection.get("running")
+                          and not self.inspection.get("conflicts") and not self.inspection.get("recovery_needed")
+                          and not self.controller.pending_operation(self.game))
+        self.proxy_toggle.setEnabled(bool(resolved and not self.busy))
+        self.proxy_choice.setEnabled(can_choose)
+        choice = self.proxy_choice.currentData()
+        can_switch = can_choose and installed and not unsafe and self.inspection.get("proxy_switch_supported", False)
+        self.proxy_apply.setEnabled(bool(can_switch and choice and choice not in ("auto", self.inspection.get("proxy_name"))))
+        self.proxy_next.setEnabled(bool(can_switch and self.inspection.get("proxy_next")))
+        choices = self.inspection.get("component_choices") or {}
+        self.component_panel.setVisible(bool(resolved and choices.get("supported")))
+        for widget in (self.host_choice, self.runtime_choice, self.optipatcher_check):
+            widget.setEnabled(can_choose)
+        self.components_apply.setVisible(bool(installed))
+        self.components_apply.setEnabled(bool(can_choose and installed and not unsafe
+                                              and self.selected_components() != self.installed_components()))
+
+    def selected_components(self):
+        plugins = (self.inspection.get("component_choices") or {}).get("optipatcher") or [None]
+        selection = {"daniel": self.runtime_choice.currentData(),
+                     "optipatcher": plugins[0] if self.optipatcher_check.isChecked() else None}
+        if self.host_choice.currentData() not in (None, "amdnr"):
+            selection["host"] = self.host_choice.currentData()
+        return selection
+
+    def installed_components(self):
+        installed = self.inspection.get("components") or {}
+        selection = {"daniel": (installed.get("daniel") or {}).get("version"),
+                     "optipatcher": (installed.get("optipatcher") or {}).get("version")}
+        if (installed.get("host") or {}).get("build"):
+            selection["host"] = installed["host"]["build"]
+        return selection
+
+    def selected_host(self):
+        choices = self.inspection.get("component_choices") or {}
+        hosts = {item["key"]: item for item in choices.get("hosts") or []}
+        return hosts.get(self.host_choice.currentData() or "amdnr", {"key": "amdnr", "builtin_runtime": True})
+
+    def fill_runtimes(self, daniel):
+        """List the runtimes the selected host drives; only AMDNR has a built-in one."""
+        choices = self.inspection.get("component_choices") or {}
+        host = self.selected_host()
+        self.runtime_choice.blockSignals(True)
+        self.runtime_choice.clear()
+        if host.get("builtin_runtime", True):
+            self.runtime_choice.addItem("lmxxf, built into AMDNR (tested in games on Linux)", None)
+        for version in (choices.get("host_runtimes") or {}).get(host["key"], choices.get("runtimes", [])):
+            self.runtime_choice.addItem(f"danielblnc {version}, downloaded from AMDNR's release", version)
+        index = self.runtime_choice.findData(daniel)
+        self.runtime_choice.setCurrentIndex(max(0, index))
+        self.runtime_choice.blockSignals(False)
+
+    def host_changed(self):
+        self.fill_runtimes(self.runtime_choice.currentData())
+        self.component_note.setText(self.component_text())
+        self.controls()
+
+    def component_text(self):
+        choices = self.inspection.get("component_choices") or {}
+        gpu = choices.get("gpu") or {}
+        host = self.selected_host()
+        gpu_text = (f"GPU: {gpu['gfx']} ({gpu['generation'].upper()})" if gpu.get("gfx")
+                    else "GPU generation not detected; all danielblnc runtimes this host drives are listed.")
+        if gpu.get("apu"):
+            gpu_text += ". danielblnc's runtime does not run on integrated GPUs."
+        text = (gpu_text + "\nOptiPatcher patches the games it supports so they offer upscaler inputs on AMD."
+                "\ndanielblnc's runtime is DLSS-NR on AMD by Daniel Blanco, shipped unmodified by AMDNR with his "
+                "permission; all rights stay with him. On Linux it passes automated GPU tests; game reports are still needed. "
+                "Switching runtimes later rewrites only [DlssNr] NrBackend in OptiScaler.ini.")
+        if host["key"] != "amdnr":
+            text += (f"\n{host.get('title', host['key'])} is an independent OptiScaler fork by {host.get('author', 'its author')} "
+                     "(GPL-3.0) that replaces the AMDNR host and runs danielblnc's runtime only. Its installer scripts "
+                     "are not used. It passes the same automated host test on Linux; no game report yet.")
+            if not (choices.get("host_runtimes") or {}).get(host["key"]):
+                text += " No runtime it drives supports this GPU."
+        if len(choices.get("hosts") or []) > 1:
+            text += ("\nChanging the host build replaces OptiScaler.ini with that host's own; the previous file is "
+                     "kept in the launcher's state folder.")
+        return text
+
+    def show_components(self, result):
+        choices = result.get("component_choices") or {}
+        selected = choices.get("selected") or {}
+        self.host_choice.blockSignals(True)
+        self.optipatcher_check.blockSignals(True)
+        self.host_choice.clear()
+        for host in choices.get("hosts") or []:
+            self.host_choice.addItem(f"{host['title']} (default)" if host["key"] == "amdnr"
+                                     else f"{host['title']} by {host.get('author', 'its author')}", host["key"])
+        self.host_choice.setCurrentIndex(max(0, self.host_choice.findData(selected.get("host") or "amdnr")))
+        self.host_choice.setVisible(self.host_choice.count() > 1)
+        self.fill_runtimes(selected.get("daniel"))
+        self.optipatcher_check.setChecked(bool(selected.get("optipatcher")))
+        self.optipatcher_check.setVisible(bool(choices.get("optipatcher")))
+        self.host_choice.blockSignals(False)
+        self.optipatcher_check.blockSignals(False)
+        self.component_note.setText(self.component_text())
+
+    def confirm_notices(self):
+        """Ask before changing files in a game with a blocking notice."""
+        texts = [item["text"] for item in self.inspection.get("notices", []) if item.get("level") == "confirm"]
+        if not texts:
+            return True
+        answer = QMessageBox.question(self, "Install anyway?", "\n\n".join(texts) + "\n\nInstall anyway?")
+        return answer == QMessageBox.StandardButton.Yes
+
+    def save_components(self):
+        if not hasattr(self.controller, "set_components") or not self.component_panel.isVisible():
+            return True
+        try:
+            self.controller.set_components(self.game, **self.selected_components())
+            return True
+        except Exception as error:
+            self.failure(error)
+            return False
+
+    def apply_components(self):
+        if self.busy or not self.game or not self.save_components():
+            return
+        current = getattr(getattr(self.controller, "backend", None), "addon_version", None)
+        self.operate("repair" if self.inspection.get("addon_version") == current else "update")
+
+    def toggle_proxy(self):
+        self.proxy_panel.setVisible(not self.proxy_panel.isVisible())
+        self.proxy_toggle.setText("Advanced compatibility ▴" if self.proxy_panel.isVisible() else "Advanced compatibility ▾")
+        if self.proxy_panel.isVisible():
+            QTimer.singleShot(0, lambda: self.detail_scroll.ensureWidgetVisible(self.proxy_next))
+
+    def show_proxies(self, result):
+        self.proxy_choice.blockSignals(True)
+        self.proxy_choice.clear()
+        self.proxy_choice.addItem("Automatic (recommended)", "auto")
+        current = result.get("proxy_name")
+        options = result.get("proxy_options", [])
+        for option in options:
+            text = option["name"]
+            if option.get("current"):
+                text += " · installed"
+            elif not option.get("available"):
+                text += " · occupied"
+            self.proxy_choice.addItem(text, option["name"])
+            self.proxy_choice.model().item(self.proxy_choice.count() - 1).setEnabled(bool(option.get("available")))
+        index = self.proxy_choice.findData(current)
+        self.proxy_choice.setCurrentIndex(max(0, index))
+        self.proxy_choice.blockSignals(False)
+        if current:
+            tried = ", ".join(result.get("proxy_history", []))
+            issue = result.get("proxy_switch_issue")
+            self.proxy_summary.setText(f"Installed loading DLL: {current}" + (f"\nTried: {tried}" if tried else "")
+                                       + (f"\n{issue}" if issue else "")
+                                       + ("\nNo untried names remain. You can select an earlier name manually."
+                                          if not issue and not result.get("proxy_next") and len(result.get("proxy_history", [])) > 1 else ""))
+        else:
+            available = next((item["name"] for item in options if item.get("available")), None)
+            self.proxy_summary.setText(f"Automatic choice: {available}. Applies when you install." if available
+                                       else "No loading DLL name is currently available.")
 
     @Slot(str)
     def report(self, message):
@@ -471,10 +701,12 @@ class Window(QMainWindow):
     @Slot(object)
     def show_games(self, games):
         selected = self.game
+        self.artwork.images.clear()
         self.library.blockSignals(True)
         self.library.clear()
         for game in games:
             item = QListWidgetItem(game.name)
+            item.setIcon(self.placeholder_icon)
             item.setSizeHint(QSize(0, ROW_HEIGHT))
             item.setData(Qt.ItemDataRole.UserRole, game)
             item.setToolTip(str(game.install_dir))
@@ -485,6 +717,12 @@ class Window(QMainWindow):
             self.library.setCurrentRow(0)
         self.library.blockSignals(False)
         self.filter_games(self.search.text())
+        # Prioritize the selected banner before queueing the library thumbnails.
+        current = self.library.currentItem()
+        if current:
+            self.request_artwork(current.data(Qt.ItemDataRole.UserRole), "banner")
+        for game in games:
+            self.request_artwork(game, "thumbnail")
         self.report("Library ready. Choose a game to get started.")
         self.refresh_after_work = True
         self.library_ready.emit()
@@ -520,8 +758,13 @@ class Window(QMainWindow):
             return
         self.game = item.data(Qt.ItemDataRole.UserRole) if item and not item.isHidden() else None
         self.inspection = {}
+        self.show_proxies({})
+        self.notices.hide()
         self.detail_scroll.verticalScrollBar().setValue(0)
         if not self.game:
+            self.artwork_key = None
+            self.banner.set_image(None)
+            self.banner.hide()
             self.platform.setText("LIBRARY")
             self.title.setText("No matching games" if self.library.count() else "Add your first game")
             self.status.setText("")
@@ -531,8 +774,13 @@ class Window(QMainWindow):
             self.controls()
             return
         game = self.game
+        source = self.artwork_source(game)
+        self.artwork_key = source.key
+        self.banner.set_image(None)
+        self.banner.show()
+        self.artwork.request(source, "banner")
         self.title.setText(game.name)
-        self.platform.setText(f"STEAM  /  {game.appid}" if game.appid else "MANUALLY ADDED GAME")
+        self.platform.setText(f"STEAM  /  {game.appid}" if game.appid else stores.label(game) or "MANUALLY ADDED GAME")
         self.path.setText(str(game.exe_dir or game.install_dir))
         if getattr(game, "library_ambiguous", False):
             self.status.setText("Multiple Steam copies")
@@ -542,11 +790,41 @@ class Window(QMainWindow):
             self.description.setText("" if game.exe_dir else "Several executable locations may exist. Choose the main 64-bit DirectX 12 game executable to continue.")
         self.controls()
         if game.exe_dir:
-            self.work(lambda: self.controller.backend.inspect(game.exe_dir), self.show_inspection)
+            self.work(lambda: self.controller.inspect(game), self.show_inspection)
+
+    def artwork_source(self, game):
+        # The selected executable is already recorded by Add game / Choose exe.
+        # Reading that setting avoids scanning a game folder on the UI thread.
+        # Heroic and Lutris games otherwise use the target found during discovery.
+        key = self.controller.game_key(game) if hasattr(self.controller, "game_key") else None
+        executable = self.controller.settings.get("executables", {}).get(key) or getattr(game, "executable", None)
+        return Source(game.appid, game.steam_root, Path(executable) if executable else None)
+
+    def request_artwork(self, game, kind):
+        self.artwork.request(self.artwork_source(game), kind)
+
+    @Slot(str, str, object)
+    def artwork_ready(self, key, kind, image):
+        if kind == "banner":
+            # Downloads may finish after the user selects a different game.
+            if key == self.artwork_key:
+                self.banner.set_image(image, key.startswith("exe:"))
+        elif image is not None:
+            icon = QIcon(QPixmap.fromImage(image))
+            for index in range(self.library.count()):
+                item = self.library.item(index)
+                if self.artwork_source(item.data(Qt.ItemDataRole.UserRole)).key == key:
+                    item.setIcon(icon)
 
     @Slot(object)
     def show_inspection(self, result):
         self.inspection = result
+        self.show_proxies(result)
+        self.show_components(result)
+        notices = [item["text"] for item in result.get("notices", [])]
+        self.notices.setText("\n".join(("⚠ " if item.get("level") != "info" else "ℹ ") + item["text"]
+                                        for item in result.get("notices", [])))
+        self.notices.setVisible(bool(notices))
         if result.get("recovery_needed") or self.controller.pending_operation(self.game):
             self.status.setText("Interrupted operation")
             self.description.setText("Close Steam and this game, then use Install or Repair. The launcher will recover the previous operation first.")
@@ -564,7 +842,12 @@ class Window(QMainWindow):
                 self.description.setText("Enable DLSS, FSR or XeSS in the game. Insert opens OptiScaler; Home toggles neural rendering.")
         else:
             self.status.setText("Ready to install")
-            self.description.setText("The launcher downloads the required runtime, finds a shader compiler, backs up affected files and sets Steam's launch options.")
+            store = stores.store_name(self.game)
+            launch = ("sets Steam's launch options" if self.game.appid else
+                      f"shows the wrapper to add in {store}" if store else
+                      "shows the launch option to add to your game runner")
+            self.description.setText("The launcher downloads the required runtime, finds a shader compiler, backs up "
+                                     f"affected files and {launch}.")
         if result.get("running"):
             self.description.setText("This game is running. Save and close it before installing, repairing or removing neural rendering.")
         self.report("Installation check complete.")
@@ -588,6 +871,8 @@ class Window(QMainWindow):
             try:
                 self.game = self.controller.set_executable(self.game, Path(path))
                 self.library.currentItem().setData(Qt.ItemDataRole.UserRole, self.game)
+                self.library.currentItem().setIcon(self.placeholder_icon)
+                self.request_artwork(self.game, "thumbnail")
                 self.select_game(self.library.currentItem())
             except Exception as error:
                 self.failure(error)
@@ -599,18 +884,27 @@ class Window(QMainWindow):
             QMessageBox.information(self, "Close Steam first", "Please exit Steam completely, then click the action again. Steam needs to be closed so it can keep the launch options we set for this game.")
             return
         if action == "uninstall":
-            answer = QMessageBox.question(self, "Restore this game?", f"Remove neural rendering from {self.game.name} and restore its original files and Steam launch options?\n\nYour saves are kept.")
+            restored = "original files and Steam launch options" if self.game.appid else "original files"
+            answer = QMessageBox.question(self, "Restore this game?", f"Remove neural rendering from {self.game.name} and restore its {restored}?\n\nYour saves are kept.")
             if answer != QMessageBox.StandardButton.Yes:
                 return
+        if action == "install" and (not self.confirm_notices() or not self.save_components()):
+            return
         self.last_operation = action
-        self.work(lambda: self.controller.operate(action, self.game), self.operation_done, refresh=True)
+        game = self.game
+        proxy = self.proxy_choice.currentData() or "auto"
+        if action == "next_proxy":
+            action, proxy = "switch_proxy", "next"
+        options = {"proxy": proxy} if action in ("install", "switch_proxy") else {}
+        self.work(lambda: self.controller.operate(action, game, **options), self.operation_done, refresh=True)
 
     @Slot(object)
     def operation_done(self, result):
         self.report(result["message"])
         self.refresh_after_work = True
         if result.get("launch_options"):
-            QMessageBox.information(self, "Manual game launch option", result["message"] + "\n\n" + result["launch_options"])
+            QMessageBox.information(self, result.get("title", "Manual game launch option"),
+                                    result["message"] + "\n\n" + result["launch_options"])
 
     def pick_compiler(self):
         path, _ = QFileDialog.getOpenFileName(self, "Select a native Windows shader compiler", str(Path.home()), "Shader compiler (d3dcompiler_47.dll D3DCompiler_47.dll)")
@@ -629,8 +923,14 @@ class Window(QMainWindow):
             SettingsDialog(self).exec()
 
     def launch_game(self):
-        if self.game and self.game.appid:
-            QDesktopServices.openUrl(QUrl(f"steam://rungameid/{self.game.appid}"))
+        if not self.game:
+            return
+        store = stores.store_name(self.game)
+        # Heroic and Lutris start their games through their own link handlers.
+        url = (f"steam://rungameid/{self.game.appid}" if self.game.appid
+               else stores.launch_url(self.game) if store else None)
+        if url and not QDesktopServices.openUrl(QUrl(url)):
+            self.report(f"Could not open {store or 'Steam'}. Start the game from {store or 'Steam'} instead.")
 
     def open_folder(self):
         if self.game:
@@ -652,6 +952,7 @@ class Window(QMainWindow):
             QMessageBox.information(self, "Operation in progress", "Please wait for the current operation to finish before closing the launcher.")
             event.ignore()
         else:
+            self.artwork.close()
             event.accept()
 
 

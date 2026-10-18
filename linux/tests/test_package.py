@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import tempfile
 import unittest
 import sys
@@ -39,15 +40,18 @@ class PackageTests(unittest.TestCase):
         (self.bundle / "x86_64-unix").mkdir()
         (self.bundle / "x86_64-unix/libamdnr_signal_guard.so").write_bytes(b"signal guard")
         (self.package / "winmm.dll").write_bytes(b"replacement")
+        (self.package / "d3d12.dll").write_bytes(b"graphics replacement")
+        shutil.copy2(ROOT / "proxies.py", self.bundle / "proxies.py")
         (self.package / "d3dcompiler_47.dll").write_bytes(b"native compiler")
-        (self.game / "winmm.dll").write_bytes(b"original mod")
+        (self.game / "d3d12.dll").write_bytes(b"original mod")
 
     def test_install_restore_and_preserve_unrelated_files(self):
         manage.install(self.package, self.game)
         self.assertEqual((self.game / "winmm.dll").read_bytes(), b"replacement")
         (self.game / "unrelated.save").write_bytes(b"save")
         manage.uninstall(self.game)
-        self.assertEqual((self.game / "winmm.dll").read_bytes(), b"original mod")
+        self.assertEqual((self.game / "d3d12.dll").read_bytes(), b"original mod")
+        self.assertFalse((self.game / "winmm.dll").exists())
         self.assertEqual((self.game / "unrelated.save").read_bytes(), b"save")
         self.assertFalse((self.game / manage.BACKUP).exists())
 
@@ -73,6 +77,66 @@ class PackageTests(unittest.TestCase):
         self.assertEqual((unix / "amdhip64_7.so").read_bytes(), b"x86_64-unix/amdhip64_7.so")
         self.assertFalse((unix / "amdhip64_7.dll.so").exists())
         self.assertTrue((staged / "amdnr-linux/x86_64-windows/amdhip64_7.dll").is_file())
+        self.assertTrue((staged / "amdnr-linux/proxies.py").is_file())
+        self.assertEqual(json.loads((staged / "amdnr-linux/proxy.json").read_text()), {"proxy": "winmm.dll"})
+
+    def test_automatic_proxy_skips_case_insensitive_foreign_mod(self):
+        (self.game / "WINMM.DLL").write_bytes(b"another mod")
+        manage.install(self.package, self.game)
+        self.assertEqual((self.game / "WINMM.DLL").read_bytes(), b"another mod")
+        self.assertFalse((self.game / "winmm.dll").exists())
+        self.assertEqual((self.game / "version.dll").read_bytes(), b"replacement")
+        record = json.loads((self.game / manage.RECORD).read_text())
+        self.assertEqual(record["launcher"]["proxy_name"], "version.dll")
+        self.assertEqual(json.loads((self.game / "amdnr-linux/proxy.json").read_text()), {"proxy": "version.dll"})
+        manage.uninstall(self.game)
+        self.assertEqual((self.game / "WINMM.DLL").read_bytes(), b"another mod")
+        self.assertFalse((self.game / "version.dll").exists())
+
+    def test_manual_proxy_selection_and_collision_rejection(self):
+        (self.game / "VERSION.DLL").write_bytes(b"another mod")
+        with self.assertRaises(ValueError):
+            manage.install(self.package, self.game, proxy="version.dll")
+        self.assertFalse((self.game / manage.RECORD).exists())
+        manage.install(self.package, self.game, proxy="dbghelp.dll")
+        self.assertEqual((self.game / "dbghelp.dll").read_bytes(), b"replacement")
+        self.assertFalse((self.game / "winmm.dll").exists())
+        manage.uninstall(self.game)
+        self.assertEqual((self.game / "VERSION.DLL").read_bytes(), b"another mod")
+
+    def test_extra_proxy_in_package_is_rejected_before_backups(self):
+        for name in ("version.dll", "Winmm.dll"):
+            with self.subTest(name=name):
+                (self.package / name).write_bytes(b"second host")
+                for proxy in ("winmm.dll", "version.dll"):
+                    with self.assertRaisesRegex(ValueError, "extra proxy"):
+                        manage.install(self.package, self.game, proxy=proxy)
+                self.assertEqual(set(path.name for path in self.game.iterdir()), {"d3d12.dll"})
+                self.assertEqual((self.game / "d3d12.dll").read_bytes(), b"original mod")
+                (self.package / name).unlink()
+
+    def test_cli_install_switch_and_uninstall(self):
+        for name in ("OptiScaler.ini", "d3d12core.dll", "amdnr-linux/x86_64-unix/amdhip64_7.so"):
+            (self.package / name).write_bytes(b"fixture")
+        shutil.copy2(ROOT / "launch.py", self.bundle / "launch.py")
+        (self.bundle / "run.sh").chmod(0o755)
+        env = dict(os.environ, XDG_DATA_HOME=str(self.root / "data"), XDG_CACHE_HOME=str(self.root / "cache"))
+
+        def command(*args):
+            result = subprocess.run([sys.executable, str(ROOT / "manage.py"), *map(str, args)],
+                                    env=env, capture_output=True, text=True, timeout=15)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+        command("install", self.package, self.game, "--proxy", "version.dll")
+        self.assertTrue((self.game / "version.dll").is_file())
+        command("switch-proxy", self.game, "--proxy", "dbghelp.dll")
+        self.assertFalse((self.game / "version.dll").exists())
+        self.assertEqual((self.game / "dbghelp.dll").read_bytes(), b"replacement")
+        command("switch-proxy", self.game, "--proxy", "next")
+        self.assertEqual(json.loads((self.game / "amdnr-linux/proxy.json").read_text()), {"proxy": "winmm.dll"})
+        command("uninstall", self.game)
+        self.assertEqual(set(path.name for path in self.game.iterdir()), {"d3d12.dll"})
+        self.assertEqual((self.game / "d3d12.dll").read_bytes(), b"original mod")
 
     def test_modified_file_requires_explicit_restore(self):
         manage.install(self.package, self.game)
@@ -81,7 +145,7 @@ class PackageTests(unittest.TestCase):
             manage.uninstall(self.game)
         self.assertEqual((self.game / "winmm.dll").read_bytes(), b"later user mod")
         manage.uninstall(self.game, force=True)
-        self.assertEqual((self.game / "winmm.dll").read_bytes(), b"original mod")
+        self.assertEqual((self.game / "d3d12.dll").read_bytes(), b"original mod")
 
     def test_failed_install_restores_original(self):
         original_copy = manage.shutil.copy2
@@ -93,8 +157,8 @@ class PackageTests(unittest.TestCase):
         with patch.object(manage.shutil, "copy2", side_effect=copy):
             with self.assertRaisesRegex(OSError, "simulated disk failure"):
                 manage.install(self.package, self.game)
-        self.assertEqual((self.game / "winmm.dll").read_bytes(), b"original mod")
-        self.assertEqual(set(p.name for p in self.game.iterdir()), {"winmm.dll"})
+        self.assertEqual((self.game / "d3d12.dll").read_bytes(), b"original mod")
+        self.assertEqual(set(p.name for p in self.game.iterdir()), {"d3d12.dll"})
 
     def test_symlink_and_reserved_paths_rejected_before_changes(self):
         outside = self.root / "outside"
@@ -139,7 +203,7 @@ class PackageTests(unittest.TestCase):
         self.assertEqual({path.name: path.read_bytes() for path in (bundle / "prefix-backups").iterdir()}, backups)
         self.assertEqual(compiler.read_bytes(), b"native compiler")
         self.assertTrue(compiler.with_name("amdhip64_7.dll").is_file())
-        self.assertEqual((self.game / "winmm.dll").read_bytes(), b"original mod")
+        self.assertEqual((self.game / "d3d12.dll").read_bytes(), b"original mod")
         self.assertFalse((self.game / manage.RECORD).exists())
         self.assertFalse((self.game / manage.BACKUP).exists())
 

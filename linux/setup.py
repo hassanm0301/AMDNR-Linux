@@ -15,6 +15,7 @@ import urllib.request
 import zipfile
 
 import manage
+import runtimes
 
 ROOT = Path(__file__).resolve().parent
 RELEASE_VERSION = "0.3.5.5R4"
@@ -116,7 +117,12 @@ def fetch_runtime(output, cache):
     module.fetch(output, cache)
 
 
-def prepare(compiler, archive=None, output=None, cache=None):
+def prepare(compiler, archive=None, output=None, cache=None, daniel=None, optipatcher=None, host=None):
+    """daniel: a pinned danielblnc runtime version; optipatcher: a pinned
+    plugin version (or True for the newest). Both are downloaded from their
+    publishers, verified, and staged only when requested. host: None for the
+    AMDNR release, or an alternate host build key ("presr"), which needs
+    danielblnc's runtime and defaults to the newest one it drives."""
     if sys.version_info < (3, 12):
         raise ValueError("Python 3.12 or newer is required.")
     compiler = Path(compiler).expanduser().resolve()
@@ -129,10 +135,27 @@ def prepare(compiler, archive=None, output=None, cache=None):
         raise ValueError("Download cache must be outside the output package directory.")
     validate_compiler(compiler)
     verify_binaries()
+    build = runtimes.host_build(host)
+    if build is not None:
+        offered = runtimes.HOST_RUNTIMES[build.host_version]
+        daniel = offered[0] if daniel is None else daniel
+        if daniel not in offered:
+            raise ValueError(f"{build.title} drives danielblnc runtime {', '.join(offered)} only.")
+    elif daniel is not None and daniel not in runtimes.HOST_RUNTIMES.get(RELEASE_VERSION, (daniel,)):
+        raise ValueError(f"AMDNR {RELEASE_VERSION} is offered with danielblnc runtime "
+                         f"{', '.join(runtimes.HOST_RUNTIMES[RELEASE_VERSION])}.")
+    if daniel is not None:
+        runtimes.daniel_runtime(daniel)  # reject an unknown version before any download
+    if optipatcher not in (None, False):
+        optipatcher = runtimes.optipatcher(None if optipatcher is True else optipatcher).version
+    expected = (build.sha256, build.title) if build else (RELEASE_SHA256, f"AMDNR {RELEASE_VERSION}")
     if archive is not None:
         archive = Path(archive).expanduser().resolve()
-        if not archive.is_file() or digest(archive) != RELEASE_SHA256:
-            raise ValueError(f"Expected the pinned, unmodified AMDNR {RELEASE_VERSION} archive; checksum mismatch.")
+        if not archive.is_file() or digest(archive) != expected[0]:
+            raise ValueError(f"Expected the pinned, unmodified {expected[1]} archive; checksum mismatch.")
+    elif build is not None:
+        print(f"Downloading pinned {build.title} ({build.homepage}).", flush=True)
+        archive = runtimes.prepare_host(build.key, cache)[1]
     else:
         archive = fetch_archive(cache)
     # Always extract a fresh runtime from verified package archives. A mutable
@@ -141,7 +164,14 @@ def prepare(compiler, archive=None, output=None, cache=None):
     with tempfile.TemporaryDirectory(prefix="amdnr-prepare-", dir=output.parent) as temp:
         runtime = Path(temp) / "rocm"
         fetch_runtime(runtime, cache)
-        manage.stage(archive, compiler, output, ROOT / "build", runtime)
+        components = {}
+        if daniel is not None:
+            print(f"Downloading pinned danielblnc runtime {daniel} (DLSS-NR on AMD by Daniel Blanco).", flush=True)
+            components["daniel"] = runtimes.prepare_daniel(daniel, cache, Path(temp) / "daniel")
+        if optipatcher not in (None, False):
+            print(f"Downloading pinned OptiPatcher {optipatcher}.", flush=True)
+            components["optipatcher"] = runtimes.prepare_optipatcher(optipatcher, cache)
+        manage.stage(archive, compiler, output, ROOT / "build", runtime, **components)
     print(f"Prepared {output}\nNo game files were changed. Install with linux/manage.py install.")
     return output
 
@@ -151,11 +181,18 @@ def main(argv=None):
     sub = parser.add_subparsers(dest="command", required=True)
     command = sub.add_parser("prepare", help="Verify binaries and prepare a package with pinned upstream assets")
     command.add_argument("--compiler", type=Path, required=True, help="Native 64-bit d3dcompiler_47.dll from your own game installation")
-    command.add_argument("--archive", type=Path, help="Existing pinned AMDNR 0.3.5.5R4 archive; downloaded when omitted")
+    command.add_argument("--archive", type=Path, help="Existing pinned host archive (AMDNR 0.3.5.5R4 or the --host build); downloaded when omitted")
+    command.add_argument("--host", choices=[build.key for build in runtimes.HOST_BUILDS],
+                         help="Use an alternate OptiScaler host instead of AMDNR: presr is TheAutomatic's "
+                              "OptiScaler AMD pre-SR, which runs danielblnc's runtime only")
     command.add_argument("--output", type=Path, default=ROOT / "build/package")
     command.add_argument("--cache", type=Path, default=ROOT / "deps/packages")
+    command.add_argument("--daniel-runtime", choices=[item.version for item in runtimes.DANIEL_RUNTIMES],
+                         help="Also stage danielblnc's runtime and select it (NrBackend=daniel)")
+    command.add_argument("--optipatcher", nargs="?", const=True, choices=[item.version for item in runtimes.OPTIPATCHER],
+                         help="Also stage OptiScaler's OptiPatcher plugin (newest when no version is given)")
     args = parser.parse_args(argv)
-    prepare(args.compiler, args.archive, args.output, args.cache)
+    prepare(args.compiler, args.archive, args.output, args.cache, args.daniel_runtime, args.optipatcher, args.host)
 
 
 if __name__ == "__main__":

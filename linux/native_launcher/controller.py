@@ -18,7 +18,9 @@ import uuid
 
 from . import NAME, VERSION
 from .backend import LauncherBackend
+from . import compatibility
 from . import steam
+from . import stores
 from .versions import version_key
 
 REPOSITORY = "hassanm0301/AMDNR-Linux"
@@ -170,13 +172,16 @@ def persistent_python(data_dir):
 
 
 class Controller:
-    def __init__(self, release_root, data_dir=None, cache_dir=None, steam_roots=None, progress=None):
+    def __init__(self, release_root, data_dir=None, cache_dir=None, steam_roots=None, progress=None,
+                 heroic_roots=None, lutris_roots=None):
         self.release_root = Path(release_root).resolve()
         # Keep the original storage identity so upgrades retain settings, backups,
         # recovery journals and the shared Python used by installed games.
         self.data_dir = Path(data_dir or Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "nr-linux-manager").expanduser().resolve()
         self.cache_dir = Path(cache_dir or Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "nr-linux-manager").expanduser().resolve()
         self.steam_roots = steam_roots
+        self.heroic_roots = heroic_roots
+        self.lutris_roots = lutris_roots
         self.progress = progress or (lambda message: None)
         self.settings_path = self.data_dir / "settings.json"
         try:
@@ -188,6 +193,7 @@ class Controller:
         self.games = []
         self.backend = LauncherBackend(self.release_root, self.cache_dir, self.data_dir, self.report)
         self.new_release = None
+        self._gpu = None
 
     def report(self, message):
         self.progress(str(message))
@@ -197,7 +203,13 @@ class Controller:
 
     def discover(self):
         self.report("Looking for installed Steam games…")
-        self.games = steam.discover_games(self.steam_roots)
+        found = steam.discover_games(self.steam_roots)
+        self.report("Looking for Heroic and Lutris games…")
+        # Steam's own entry manages its launch options; skip a store's copy of that folder.
+        taken = {game.install_dir.resolve() for game in found}
+        found += [game for game in stores.discover_games(self.heroic_roots, self.lutris_roots)
+                  if game.install_dir not in taken]
+        self.games = sorted(found, key=lambda game: game.name.casefold())
         for index, game in enumerate(self.games):
             selected = self.settings.get("executables", {}).get(self.game_key(game))
             if selected and not getattr(game, "library_ambiguous", False):
@@ -205,6 +217,8 @@ class Controller:
                 if executable.is_file() and executable.resolve().is_relative_to(game.install_dir.resolve()):
                     self.games[index] = replace(game, exe_dir=executable.resolve().parent)
         existing = {game.install_dir.resolve() for game in self.games}
+        # A folder added by hand before Heroic or Lutris listed it shows once, as theirs.
+        existing |= {game.exe_dir.resolve() for game in self.games if stores.store_name(game) and game.exe_dir}
         for path in self.settings.get("manual", []):
             directory = Path(path)
             if directory.is_dir() and directory.resolve() not in existing:
@@ -226,6 +240,8 @@ class Controller:
             raise ValueError("Choose the game's 64-bit Windows executable.")
         if game.appid and not executable.is_relative_to(game.install_dir.resolve()):
             raise ValueError("Choose an executable inside this Steam game's installation.")
+        if stores.store_name(game) and not executable.is_relative_to(game.install_dir.resolve()):
+            raise ValueError(f"Choose an executable inside this game's {stores.store_name(game)} installation.")
         if game.exe_dir and self.backend.inspect(game.exe_dir).get("installed") and executable.parent != game.exe_dir:
             raise ValueError("Uninstall the current patch before changing its executable directory.")
         self.settings.setdefault("executables", {})[self.game_key(game)] = str(executable)
@@ -241,22 +257,127 @@ class Controller:
         manual = self.settings.setdefault("manual", [])
         if str(directory) not in manual:
             manual.append(str(directory))
-            self.save_settings()
+        game = steam.SteamGame("", directory.name, directory, Path(), directory, directory)
+        self.settings.setdefault("executables", {})[self.game_key(game)] = str(executable)
+        self.save_settings()
         return directory
+
+    def executable(self, game):
+        """Use the chosen executable only while it still belongs to this game."""
+        selected = self.settings.get("executables", {}).get(self.game_key(game))
+        if selected and game.exe_dir:
+            path = Path(selected).resolve()
+            if path.is_file() and path.parent == game.exe_dir.resolve():
+                return path
+        return None
+
+    def inspect(self, game):
+        result = self.backend.inspect(game.exe_dir, executable=self.executable(game))
+        result["notices"] = (compatibility.notices(game, managed=result.get("installed", False))
+                             + stores.notices(game, installed=result.get("installed", False)))
+        result["component_choices"] = self.component_choices(game, result)
+        return result
+
+    def gpu(self):
+        """The ROCm-visible GPU used to filter runtime choices (cached)."""
+        if self._gpu is None:
+            self._gpu = self.backend.runtimes.detect_gpu() or {}
+        return self._gpu or None
+
+    def host_version(self, backend=None, host=None):
+        """The AMDNR release version, or an alternate host build's HOST_RUNTIMES key."""
+        backend = backend or self.backend
+        if host not in (None, "amdnr"):
+            return backend.runtimes.host_build(host).host_version
+        return getattr(backend.setup, "RELEASE_VERSION", None)
+
+    def host_title(self, backend=None, host=None):
+        backend = backend or self.backend
+        if host not in (None, "amdnr"):
+            return backend.runtimes.host_build(host).title
+        return f"AMDNR {self.host_version(backend)}"
+
+    def offered_runtimes(self, backend=None, host=None):
+        backend = backend or self.backend
+        return [runtime.version for runtime in
+                backend.runtimes.runtimes_for(self.gpu(), host_version=self.host_version(backend, host))]
+
+    def component_choices(self, game, inspection=None):
+        """Optional components this release offers this GPU, and the selection."""
+        runtimes = self.backend.runtimes
+        gpu = self.gpu()
+        supported = self.backend.supports_components()
+        selected = self.components(game, inspection)
+        hosts = [dict(key="amdnr", title=self.host_title(), builtin_runtime=True)]
+        if supported and self.backend.supports_host_builds():
+            hosts += [dict(key=build.key, title=build.title, author=build.author, homepage=build.homepage,
+                           builtin_runtime=False) for build in runtimes.HOST_BUILDS]
+        host_runtimes = {item["key"]: self.offered_runtimes(host=item["key"]) if supported else [] for item in hosts}
+        host = selected.get("host") or "amdnr"
+        return dict(supported=supported, gpu=gpu, host_version=self.host_version(host=host),
+                    hosts=hosts, host_runtimes=host_runtimes, runtimes=host_runtimes.get(host, []),
+                    optipatcher=[plugin.version for plugin in runtimes.OPTIPATCHER] if supported else [],
+                    selected=selected)
+
+    def components(self, game, inspection=None):
+        """The saved selection, else what is installed, else the built-in runtime only.
+
+        "host" is present only when an alternate host build is chosen.
+        """
+        saved = self.settings.get("components", {}).get(self.game_key(game))
+        if isinstance(saved, dict):
+            selection = {"daniel": saved.get("daniel"), "optipatcher": saved.get("optipatcher")}
+            host = saved.get("host")
+        else:
+            installed = (inspection or {}).get("components") or {}
+            selection = {"daniel": (installed.get("daniel") or {}).get("version"),
+                         "optipatcher": (installed.get("optipatcher") or {}).get("version")}
+            host = (installed.get("host") or {}).get("build")
+        if host not in (None, "amdnr"):
+            selection["host"] = host
+        return selection
+
+    def set_components(self, game, daniel=None, optipatcher=None, host=None):
+        runtimes = self.backend.runtimes
+        host = None if host == "amdnr" else host
+        if host is not None:
+            if not self.backend.supports_host_builds():
+                raise ValueError("This Linux package cannot use another host build. Update the launcher first.")
+            runtimes.host_build(host)
+            if daniel is None:
+                raise ValueError(f"{self.host_title(host=host)} runs danielblnc's runtime only. Choose one of its runtimes.")
+        if daniel is not None:
+            runtimes.daniel_runtime(daniel)
+            offered = self.offered_runtimes(host=host)
+            if daniel not in offered:
+                raise ValueError(f"danielblnc runtime {daniel} is not offered for this GPU and "
+                                 f"{self.host_title(host=host)}. Available: {', '.join(offered) or 'none'}.")
+        if optipatcher is not None:
+            runtimes.optipatcher(optipatcher)
+        selection = {"daniel": daniel, "optipatcher": optipatcher}
+        if host is not None:
+            selection["host"] = host
+        self.settings.setdefault("components", {})[self.game_key(game)] = selection
+        self.save_settings()
+        return self.components(game)
 
     def choose_compiler(self, path):
         self.backend.setup.validate_compiler(Path(path))
         self.settings["compiler"] = str(Path(path).resolve())
         self.save_settings()
 
-    def prepare(self, game, backend=None):
+    def prepare(self, game, backend=None, components=None):
         backend = backend or self.backend
         roots = [game.install_dir]
-        roots += [item.install_dir for item in self.games if item.install_dir != game.install_dir]
+        # Another game's whole Wine prefix (a Lutris install) would use up the bounded search.
+        roots += [item.install_dir for item in self.games
+                  if item.install_dir != game.install_dir and not stores.is_prefix(item.install_dir)]
         if game.appid:
             roots.insert(1, game.library / "steamapps/compatdata" / game.appid / "pfx/drive_c/windows/system32")
+        elif getattr(game, "prefix", None):
+            roots.insert(1, game.prefix / "drive_c/windows/system32")
         compiler = self.settings.get("compiler")
-        package = backend.prepare_package(Path(compiler) if compiler else None, roots)
+        package = backend.prepare_package(Path(compiler) if compiler else None, roots, components=components)
         python = persistent_python(self.data_dir)
         if python:
             (package / "amdnr-linux/python-runtime.path").write_text(str(python) + "\n")
@@ -285,7 +406,7 @@ class Controller:
             steam.recover_launch_transaction(game, self.data_dir, keep_changes=committed)
         path.unlink()
 
-    def mutate(self, backend, action, game, package=None):
+    def mutate(self, backend, action, game, package=None, proxy=None, seeds=None):
         token = uuid.uuid4().hex
         backend.operation_id = token
         marker = self.operation_path(game)
@@ -298,8 +419,17 @@ class Controller:
             with transaction:
                 if action == "uninstall":
                     backend.uninstall(game.exe_dir)
+                elif action == "switch_proxy":
+                    backend.switch_proxy(game.exe_dir, proxy=proxy or "next", executable=self.executable(game))
                 else:
-                    getattr(backend, action)(game.exe_dir, package)
+                    options = {}
+                    if proxy is not None:
+                        options["proxy"] = proxy
+                    if self.executable(game) is not None:
+                        options["executable"] = self.executable(game)
+                    if seeds:
+                        options["seeds"] = seeds
+                    getattr(backend, action)(game.exe_dir, package, **options)
         except BaseException:
             # Retain the marker until both layers have resolved their journals.
             self.recover_operation(game)
@@ -309,17 +439,17 @@ class Controller:
         finally:
             backend.operation_id = None
 
-    def operate(self, action, game):
+    def operate(self, action, game, proxy=None):
         self.data_dir.mkdir(parents=True, exist_ok=True)
         with (self.data_dir / "operation.lock").open("a") as lock:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as error:
                 raise ValueError("Another launcher operation is already running.") from error
-            return self._operate(action, game)
+            return self._operate(action, game, proxy)
 
-    def _operate(self, action, game):
-        if action not in {"install", "repair", "update", "uninstall"}:
+    def _operate(self, action, game, proxy=None):
+        if action not in {"install", "repair", "update", "uninstall", "switch_proxy"}:
             raise ValueError("Unknown installation action.")
         if getattr(game, "library_ambiguous", False):
             raise ValueError("Steam lists this game in more than one library. Resolve the duplicate in Steam, then rescan.")
@@ -331,7 +461,14 @@ class Controller:
         directory = game.exe_dir
         if action == "uninstall":
             self.mutate(self.backend, action, game)
+            if stores.store_name(game):
+                return {"message": stores.removed_message(game)}
             return {"message": "Removed. Original game files and Steam launch options restored."}
+        if action == "switch_proxy":
+            self.report("Changing the game's loading DLL…")
+            self.mutate(self.backend, action, game, proxy=proxy)
+            selected = self.backend.inspect(directory)["proxy_name"]
+            return {"message": f"Loading DLL changed to {selected}. Launch the game to check whether OptiScaler opens."}
         backend = self.backend
         if action == "update":
             self.report("Checking for a newer Linux package…")
@@ -345,14 +482,31 @@ class Controller:
         if (version_tuple(installed_version or "") and version_tuple(selected_version or "")
                 and version_tuple(installed_version) > version_tuple(selected_version)):
             raise ValueError("This game has a newer Linux package. Download the current launcher before repairing or updating it.")
-        package = self.prepare(game, backend)
+        components = self.components(game, installed)
+        host = components.get("host")
+        if host and not backend.supports_host_builds():
+            raise ValueError("This Linux package cannot use another host build. Update the launcher first.")
+        if host and not components.get("daniel"):
+            raise ValueError(f"{self.host_title(backend, host)} runs danielblnc's runtime only. Choose one of its runtimes first.")
+        if components.get("daniel"):
+            if components["daniel"] not in self.offered_runtimes(backend, host):
+                raise ValueError(f"{self.host_title(backend, host)} does not offer danielblnc runtime "
+                                 f"{components['daniel']} for this GPU. Choose another neural runtime first.")
+        if any(components.values()) and not backend.supports_components():
+            raise ValueError("This Linux package cannot add danielblnc's runtime or OptiPatcher. Update the launcher first.")
+        package = self.prepare(game, backend, components)
+        # A host build change also starts OptiScaler.ini afresh, so it gets the first-install settings.
+        host_changed = (host or "amdnr") != ((installed.get("components") or {}).get("host") or {}).get("build", "amdnr")
+        seeds = compatibility.seeds(game, self.executable(game)) if action == "install" or host_changed else None
         try:
             self.report("Applying game files and Steam launch options…")
-            self.mutate(backend, action, game, package)
+            self.mutate(backend, action, game, package, proxy=proxy, seeds=seeds)
         finally:
             # Candidates contain large private runtime files; downloads remain cached.
             if package.parent.parent == self.cache_dir and package.parent.name.startswith("candidate-"):
                 shutil.rmtree(package.parent)
+        if stores.store_name(game):
+            return stores.install_result(game)
         if not game.appid:
             return {"message": 'Installed. Add the launch option shown below to your game runner.',
                     "launch_options": shlex.quote(str(directory / "amdnr-linux/run.sh")) + " %command%"}
@@ -375,8 +529,9 @@ class Controller:
             temporary = Path(stream.name)
         try:
             with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as output:
-                for name in ("OptiScaler.log", "lmxxf_backend.log", "amd_bridge.log",
-                             "amdnr-linux/launch.log", "OptiScaler.ini"):
+                for name in ("OptiScaler.log", "re2_framework_log.txt", "lmxxf_backend.log", "amd_bridge.log",
+                             "amd_presr.log", "dlssnr_on_amd.log", "dlssnr_on_amd.ini", "amdnr_crash.log",
+                             "amdnr-linux/launch.log", "amdnr-linux/components.json", "OptiScaler.ini"):
                     path = game.exe_dir / name
                     if (path.is_file() and not path.is_symlink()
                             and not any(p.is_symlink() for p in path.parents)

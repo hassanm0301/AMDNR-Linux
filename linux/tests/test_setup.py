@@ -166,6 +166,38 @@ class SetupTests(unittest.TestCase):
         runtime.assert_not_called()
         self.assertEqual(archive.read_bytes(), b"user archive")
 
+    def test_alternate_host_is_downloaded_with_a_runtime_it_drives(self):
+        build = setup.runtimes.PRESR
+        hosted = self.root / "pre-SR.zip"
+        hosted.write_bytes(b"pinned elsewhere")
+        with patch.object(setup, "fetch_archive") as amdnr, patch.object(setup, "fetch_runtime"), \
+                patch.object(setup.runtimes, "prepare_host", return_value=(build, hosted)) as host, \
+                patch.object(setup.runtimes, "prepare_daniel", return_value=("runtime", "files")) as daniel, \
+                patch.object(setup.manage, "stage") as stage:
+            setup.prepare(self.compiler, output=self.output, cache=self.cache, host="presr")
+        amdnr.assert_not_called()
+        host.assert_called_once_with("presr", self.cache)
+        self.assertEqual(daniel.call_args.args[0], setup.runtimes.HOST_RUNTIMES[build.host_version][0])
+        self.assertEqual(stage.call_args.args[0], hosted)
+        self.assertEqual(stage.call_args.kwargs["daniel"], ("runtime", "files"))
+
+    def test_host_and_runtime_pairings_are_checked_before_downloading(self):
+        archive = self.root / "other.zip"
+        archive.write_bytes(b"not the pre-SR release")
+        cases = ((dict(host="presr", daniel="0.6.0"), "drives danielblnc runtime 0.3.1 only"),
+                 (dict(daniel="0.3.1"), "is offered with danielblnc runtime"),
+                 (dict(host="presr", archive=archive), "pinned, unmodified OptiScaler AMD pre-SR"),
+                 (dict(host="other"), "Unknown host build"))
+        for options, message in cases:
+            with self.subTest(message), patch.object(setup, "fetch_archive") as amdnr, \
+                    patch.object(setup, "fetch_runtime") as runtime, \
+                    patch.object(setup.runtimes, "fetch") as fetch, self.assertRaisesRegex(ValueError, message):
+                setup.prepare(self.compiler, output=self.output, cache=self.cache, **options)
+            amdnr.assert_not_called()
+            runtime.assert_not_called()
+            fetch.assert_not_called()
+        self.assertFalse(self.output.exists())
+
     def test_binutils_is_not_required_by_preparation(self):
         with patch.object(setup.shutil, "which", return_value=None), \
                 patch.object(setup, "fetch_archive") as download, \
@@ -201,7 +233,7 @@ class SetupTests(unittest.TestCase):
         # Model the small source payload shipped beside the five binaries.
         for directory in ("bridge", "patches", "tests"):
             (self.linux / directory).mkdir()
-        for name in ("run.sh", "launch.py"):
+        for name in ("run.sh", "launch.py", "proxies.py"):
             (self.linux / name).write_text("fixture\n")
         (self.release / "LICENSE").write_text("fixture license\n")
         for relative in ("amd/TemporalStability.h", "amd/SystemCompiler.h",

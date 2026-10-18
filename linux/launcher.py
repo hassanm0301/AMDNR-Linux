@@ -19,8 +19,12 @@ def main():
     controller = Controller(args.release_root, args.data_dir, args.cache_dir, args.steam_root)
     if args.diagnose:
         games = controller.discover()
+        from native_launcher.stores import store_name
         print(json.dumps([{"name": g.name, "appid": g.appid, "directory": str(g.install_dir),
-                           "executable_directory": str(g.exe_dir) if g.exe_dir else None} for g in games], indent=2))
+                           "executable_directory": str(g.exe_dir) if g.exe_dir else None}
+                          | ({"store": store_name(g), "source": g.source,
+                              "prefix": str(g.prefix) if g.prefix else None} if store_name(g) else {})
+                          for g in games], indent=2))
         return
     from native_launcher.app import run
     run(controller, snapshot=args.snapshot)

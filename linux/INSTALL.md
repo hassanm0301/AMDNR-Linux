@@ -6,6 +6,20 @@ the launcher itself, and no compiling or system ROCm installation is needed.
 If your file manager opens the script as text, choose “Run as program”, or open a
 terminal in the extracted folder and run `./Start.sh`.
 
+Development builds can also be packaged as a single `.AppImage` (see
+[the build instructions](README.md)). If you have an AppImage, enable **Allow
+executing file as program** in its properties and open it. From a terminal:
+
+```sh
+chmod +x AMDNR-Linux-Manager-*.AppImage
+./AMDNR-Linux-Manager-v0.3.0-preview-x86_64.AppImage
+```
+
+If the system cannot mount AppImages through FUSE, add
+`--appimage-extract-and-run` to that command. The AppImage uses the same settings,
+downloads and installed-game runtime as the portable folder. Updating the
+launcher means downloading and opening the newer AppImage.
+
 This independent community launcher installs the tested AMDNR Linux bridge.
 AMDNR is by [3zwr1](https://github.com/3zwr1/AMD-NR---OptiScaler). It provides a
 familiar game library and installation workflow with an original interface;
@@ -37,10 +51,141 @@ If a Steam game has never been launched, start it once in Steam so its account
 settings exist. Complex custom shell launch options may require manual adjustment;
 the app refuses ambiguous edits and explains why. Do not run the app as root.
 
-For non-Steam games, use **Add a game** and select the main executable. The same
-file installation works, but the app displays a launch option for you to add to
-your existing Proton/Wine runner. Automatic runner integration currently covers
-Steam only.
+Games installed through Heroic or Lutris are listed automatically (see below).
+For other non-Steam games, use **Add game** and select the main executable. The
+same file installation works, but the app displays a launch option for you to add
+to your existing Proton/Wine runner. Only Steam's launch options are set
+automatically.
+
+The library loads Steam thumbnails and a banner for the selected game in the
+background. Downloaded artwork is cached under the manager's cache directory
+in `artwork/` and remains available offline. Heroic, Lutris and manually added
+games use the icon embedded in the game's `.exe`, extracted without running the
+game. If artwork is missing or cannot be read, a placeholder is shown and
+installation still works.
+
+## Install a Heroic or Lutris game (current development builds)
+
+The library also lists Windows games installed through **Heroic** (Epic Games,
+GOG, Amazon and sideloaded apps) and **Lutris** (Wine runner), from both native
+and Flatpak installs. Their panel is labelled with the launcher and store, for
+example **HEROIC / GOG** or **LUTRIS / WINE**. The manager only reads Heroic's and
+Lutris' settings and never changes them, so you add the wrapper yourself:
+
+1. Launch the game once from Heroic or Lutris so its prefix exists, then close it.
+2. Select the game in the manager. If asked, choose its actual 64-bit game
+   executable, then click **Install neural rendering**.
+3. Add the wrapper line that the manager shows:
+   - **Heroic:** open the game's **Settings → Advanced → Wrapper command**. Put the
+     path in **Wrapper**, leave **Arguments** empty, and add it.
+   - **Lutris:** right-click the game, choose **Configure → System options**, turn
+     on **Advanced**, and add the quoted path at the start of **Command prefix**.
+4. Click **Rescan library**. The panel confirms that the launcher starts the game
+   through the wrapper. Then launch the game from Heroic or Lutris as usual, or
+   click **Launch in Heroic** or **Launch in Lutris** in the manager.
+
+The launch button opens the launcher's own launch link, the handler its
+desktop shortcuts also go through:
+`heroic://launch/<store>/<app name>` (store `legendary`, `gog`, `nile` or
+`sideload`) or `lutris:rungameid/<id>`. Heroic or Lutris then starts the game
+with all of its own settings. Lutris, Heroic's Flatpak and Heroic's distribution
+packages register these links; a Heroic AppImage does once it is integrated into
+your desktop. If clicking the button does nothing, start the game from the
+launcher. The button stays disabled, and its tooltip says why, until the
+launcher runs this install's wrapper. It is also disabled while Repair is
+recommended or an operation needs recovery, just as for Steam games.
+
+The wrapper prepares the prefix the launcher passes to it, just as it uses
+Steam's prefix for Steam games: Heroic passes `WINEPREFIX` (for Proton,
+`STEAM_COMPAT_DATA_PATH`, whose `pfx` folder is the prefix), and Lutris passes
+`WINEPREFIX` from **Game options → Wine prefix**, or the prefix that contains the
+game. The panel shows that prefix, and warns when the wrapper would not get one.
+In that case set a Wine prefix in Lutris. For a Heroic game run through
+CrossOver, choose a Wine or Proton version, or set `WINEPREFIX` under **Settings →
+Advanced → Environment variables**.
+
+Lutris entries for store clients such as the EA app or Ubisoft Connect cover a
+whole Wine prefix: choose the game's executable inside it. After uninstalling,
+or after choosing a different executable, remove or replace the wrapper in
+Heroic or Lutris. They cannot start a game through a wrapper that no longer
+exists, and the panel warns while they still point to one.
+
+## Choose the neural runtime and plugins (current development builds)
+
+The selected game's panel has a **Neural runtime and plugins** section:
+
+- **lmxxf, built into AMDNR** is the default and the runtime tested in games on
+  Linux.
+- **danielblnc X.Y.Z** installs DLSS-NR on AMD by Daniel Blanco (danielblnc)
+  beside it and selects it. The list shows only versions your GPU and the
+  bundled AMDNR host support: RDNA 4 and RDNA 3 cards get 0.4.0 to 0.6.0, RDNA 2
+  cards get 0.6.0, and integrated GPUs and handhelds get none. The manager
+  downloads the runtime from AMDNR's GitHub release only when you choose it, and
+  checks every file against pinned SHA-256 digests. It is not redistributed by
+  this fork; all rights stay with its author. On Linux it passes automated GPU
+  tests (every listed version, RX 9070 XT) but has no gameplay report yet.
+- **OptiPatcher plugin** (OptiScaler project) patches the games it supports so
+  they offer upscaler inputs on AMD. It is placed in `OptiScaler/plugins/` beside the game's host DLL
+  and enabled with `[Plugins] LoadAsiPlugins=true`.
+- The **host build** list (the first list in the section) chooses which
+  OptiScaler host is installed. **AMDNR** is the default. **OptiScaler AMD pre-SR 1.9.1-alpha by TheAutomatic** is an
+  independent OptiScaler fork (GPL-3.0) that upstream's launcher also offers.
+  It runs danielblnc's runtime only, and only danielblnc's own 0.3.1 build
+  (RDNA 4 and RDNA 3), so the runtime list changes to that version when you pick
+  it. Its own lmxxf backend is not offered because its weights are not published
+  anywhere that can be verified. The manager downloads the pinned release from
+  TheAutomatic's GitHub, installs the host, its `OptiScaler/` folder, its
+  shaders and its licences, and leaves out its Windows Setup/Uninstall scripts.
+  It passes the same automated host test on Linux; no game report yet.
+
+Choose before **Install**. For an installed game, change the selection and
+click **Apply runtime and plugin**; this repairs (or updates) the installation
+with the new files. Only the keys that belong to the change are rewritten in
+`OptiScaler.ini` (`[DlssNr] NrBackend`, `[Plugins] LoadAsiPlugins`); your other
+settings and comments stay. Both runtimes remain installed side by side, so the
+in-game **Neural** tab can still switch runtimes; a later Repair keeps that
+in-game choice. Uninstall removes the runtime, the plugin and the
+`OptiScaler/plugins` folder if it is empty. Changing the host build is the
+exception: the two hosts read different settings, so `OptiScaler.ini` starts
+again from the new host's own file (plus the game's first-install settings),
+and your previous file is kept in the manager's state folder under `configs/`.
+
+The panel also shows notes about the game before you install: games without a
+temporal upscaler (nothing for neural rendering to use), anti-cheat software
+(use offline modes only), another OptiScaler, a standalone danielblnc install or
+ReShade in the folder, and per-game setup notes. Installing a game with a
+blocking note asks for confirmation. A few games get settings on their first
+install: GTA V Enhanced keeps GPU vendor spoofing off (it crashes with
+`ERR_GFX_STATE`), and Resident Evil Requiem uses the classic menu
+(`[Menu] OverlayMenu=false`) because its overlay swapchain is never wrapped.
+
+## Choose a loading DLL (current development builds)
+
+Expand **Advanced compatibility** in the selected game's panel. Leave the choice
+on **Automatic** for a new installation: it prefers a name the game is known to
+load (Cyberpunk 2077: `wininet.dll`, whose mod loaders hold `winmm.dll` and
+`version.dll`; Marvel's Spider-Man: `dbghelp.dll`), then a supported DLL imported
+by the selected executable, and skips names occupied by other files. With multiple
+executables in one folder, use **Choose executable** to identify the main game.
+
+You can select **winmm.dll**, **version.dll**, **dbghelp.dll**, **wininet.dll**, or
+**winhttp.dll** before installing. On an installed game, **Use selected DLL**
+changes the choice; **Try next DLL** selects an untried, unoccupied name. Close
+the game and Steam first, then launch the game again to check whether OptiScaler
+opens. After all free names have been tried, select an earlier name manually to
+retry it. The manager does not automatically launch games to test a choice.
+
+Switching uses the installed host without downloading it again. It updates the
+DLL, Wine configuration and installation record together, with rollback on
+failure. Repair and Update keep the chosen name and trial history. Existing
+installations using the old wrapper need Repair with a current package first.
+These controls are not included in the older v0.2.1 download linked above.
+
+`dxgi.dll`, `d3d11.dll`, `d3d12.dll` and `d3d12core.dll` remain reserved for DXVK
+and vkd3d; they are not OptiScaler choices. All five offered names passed isolated
+loading and representative API forwarding checks with the pinned AMDNR 0.3.5.5R4
+host under GE-Proton11-9 and Proton-Wineland 11.0. A successful DLL probe does not
+establish that a particular game loads that DLL or runs neural rendering.
 
 ## Repair, update and uninstall
 
@@ -96,14 +241,23 @@ change the neural renderer's hardware requirements.
   zstd libraries. The tested Steam Runtime 4 supplies these.
 - **Native interface:** X11 or Wayland and normal desktop libraries. On some
   Debian/Ubuntu X11 installations, Qt also requires `libxcb-cursor0`.
+- **Automated only:** danielblnc's runtime (0.4.0–0.6.0) passes the released
+  host's NGX/FSR2 pipeline test on RX 9070 XT, with every GPU job completed and a
+  material change from the NR-off image. The same test passes with TheAutomatic's
+  pre-SR 1.9.1-alpha host and danielblnc 0.3.1. No game has been reported yet
+  for either.
 - **Not validated:** other GPUs, Steam Deck, Flatpak Steam, other game runners,
-  frame generation, Ray Regeneration, AMDNR Anywhere and the danielblnc backend.
+  frame generation and Ray Regeneration. AMDNR Anywhere is not supported on Linux:
+  its capture host relies on Windows window capture that Wine does not provide.
   Flatpak can detect a library while still denying access to the host runtime;
   this app does not alter Flatpak permissions.
 
 Enable a supported upscaler in the game's graphics settings. **Insert** opens
 OptiScaler; **Home** toggles the neural effect. The prepared package selects the
-**lmxxf** backend. A banner alone does not prove neural inference is running.
+**lmxxf** backend unless you chose danielblnc's runtime. A banner alone does not
+prove neural inference is running. With danielblnc's runtime, look instead for
+`Completed AMD pre-SR passes=` in `amd_presr.log` and `network job … done` lines
+in `dlssnr_on_amd.log`.
 Look in `lmxxf_backend.log` beside the executable for `hip=1`, successful network
 initialization, and increasing **model** and **fresh composition** counts. The
 successful Stellar Blade run recorded 3,599 model frames and 3,594 fresh outputs,
@@ -128,8 +282,23 @@ and management, not a new neural model.
 | Wrapper says its Python runtime is missing | Open the complete portable launcher and Repair the game. |
 | Saves seem missing | Launch through the original Steam entry and prefix. Do not directly run the `.exe`. |
 | Game crashes or no neural frames appear | Check Proton version, GPU access and compiler; compare with `[DlssNr] Enabled=false` in `OptiScaler.ini`. |
+| Resident Evil Requiem stays black at startup | Check `re2_framework_log.txt`. If it ends at `Scanning DD2...` after suspending threads, see the REFramework note below. |
 | No AMDNR message or Insert menu | Confirm the selected folder matches the copy Steam launches, then Repair. Existing REFramework may use the same Insert key; change its menu key to Delete if both overlays open. |
 | Need diagnostic files | Use Save logs. The export includes installation health, wrapper errors and available startup logs, even if the host never loaded. Review personal paths before sharing; nothing is sent automatically. |
+
+Resident Evil Requiem requires REFramework with OptiScaler. Older REFramework
+builds can suspend a Wine thread while it holds a lock, leaving startup stuck
+at `[IntegrityCheckBypass]: Scanning DD2...`. That signature was observed locally
+with the April 26, 2026 REFramework build. Upstream fixed the matching Proton
+deadlock in **nightly 01422** (September 12, 2026); see
+[REFramework issue #1827](https://github.com/praydog/REFramework/issues/1827).
+With the game closed, back up `dinput8.dll` and replace it with the one from the
+[official REFramework nightly](https://github.com/praydog/REFramework-nightly/releases).
+Keep your existing settings, mods and Proton prefix, then retry through Steam.
+The upstream fix was validated in Onimusha; getting past this startup hang does
+not by itself establish RE9 neural rendering compatibility. Current development
+builds include `re2_framework_log.txt` in Save logs; older launchers require
+collecting that file separately.
 
 The [release page](https://github.com/hassanm0301/AMDNR-Linux/releases/tag/linux-v0.2.1)
 contains the native portable app, the smaller `AMDNR-Linux-v0.2.1.tar.gz` addon for

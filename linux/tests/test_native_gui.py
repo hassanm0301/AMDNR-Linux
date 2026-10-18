@@ -23,6 +23,7 @@ from native_launcher.steam import SteamGame
 class FakeController:
     def __init__(self, root):
         self.root = root
+        self.cache_dir = root / "artwork-cache"
         self.progress = lambda message: None
         self.games = [SteamGame("12", "A test game", root, root, root, root),
                       SteamGame("13", "Another adventure", root, root, root, None)]
@@ -36,16 +37,34 @@ class FakeController:
         self.modified = []
         self.pending = False
         self.latest_release = None
+        self.proxy = "winmm.dll"
+        self.proxy_history = []
+        self.proxy_requests = []
+        self.occupied_proxies = set()
 
     def discover(self):
         return self.games
 
     def inspect(self, directory):
+        from proxies import SUPPORTED
+        options = [{"name": name, "available": name not in self.occupied_proxies,
+                    "current": self.installed and name == self.proxy} for name in SUPPORTED]
         return dict(installed=self.installed, modified=self.modified, missing=self.missing, conflicts=self.conflicts,
-                    health_issues=self.health_issues, runtime_status="unverified")
+                    health_issues=self.health_issues, runtime_status="unverified",
+                    proxy_switch_supported=self.installed, proxy_switch_issue=None,
+                    proxy_name=self.proxy if self.installed else None, proxy_history=list(self.proxy_history),
+                    proxy_options=options, proxy_next=next((name for name in SUPPORTED
+                        if name not in self.proxy_history and name not in self.occupied_proxies), None))
 
-    def operate(self, action, game):
+    def operate(self, action, game, proxy=None):
         self.operations.append((action, game.appid))
+        self.proxy_requests.append(proxy)
+        if action == "switch_proxy" and proxy == "next":
+            proxy = self.inspect(game)["proxy_next"]
+        if proxy and proxy != "auto":
+            self.proxy = proxy
+        if self.proxy not in self.proxy_history:
+            self.proxy_history.append(self.proxy)
         self.installed = action != "uninstall"
         return {"message": "Completed fixture operation"}
 
@@ -73,6 +92,10 @@ class GuiTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="native gui ")
         self.addCleanup(self.temp.cleanup)
+        # UI fixtures stay offline; artwork has separate cache/network tests.
+        offline = patch("native_launcher.artwork_widgets.Store.load", return_value=None)
+        offline.start()
+        self.addCleanup(offline.stop)
         self.controller = FakeController(Path(self.temp.name))
         self.window = Window(self.controller)
         self.window.show()
@@ -171,6 +194,50 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(self.controller.operations, [])
         notice.assert_called_once()
 
+    def test_advanced_manual_install_and_next_proxy(self):
+        QTest.mouseClick(self.window.proxy_toggle, Qt.MouseButton.LeftButton)
+        self.assertTrue(self.window.proxy_panel.isVisible())
+        self.window.proxy_choice.setCurrentIndex(self.window.proxy_choice.findData("version.dll"))
+        self.assertFalse(self.window.proxy_apply.isEnabled())
+        with patch("native_launcher.app.steam.steam_is_running", return_value=False):
+            QTest.mouseClick(self.window.install, Qt.MouseButton.LeftButton)
+            self.wait_idle()
+            self.assertEqual(self.controller.proxy_requests[-1], "version.dll")
+            self.assertIn("version.dll", self.window.proxy_summary.text())
+            self.window.proxy_choice.setCurrentIndex(self.window.proxy_choice.findData("dbghelp.dll"))
+            self.assertTrue(self.window.proxy_apply.isEnabled())
+            QTest.mouseClick(self.window.proxy_apply, Qt.MouseButton.LeftButton)
+            self.wait_idle()
+            self.assertEqual(self.controller.proxy, "dbghelp.dll")
+            QTest.mouseClick(self.window.proxy_next, Qt.MouseButton.LeftButton)
+            self.wait_idle()
+            self.assertEqual(self.controller.proxy_requests[-1], "next")
+            self.assertEqual(self.controller.proxy, "winmm.dll")
+
+    def test_occupied_proxy_is_disabled_and_unsafe_install_cannot_switch(self):
+        self.controller.installed = True
+        self.controller.proxy_history = ["winmm.dll"]
+        self.controller.occupied_proxies.add("version.dll")
+        self.window.select_game(self.window.library.currentItem())
+        self.wait_idle()
+        index = self.window.proxy_choice.findData("version.dll")
+        self.assertFalse(self.window.proxy_choice.model().item(index).isEnabled())
+        self.controller.modified = ["winmm.dll"]
+        self.window.select_game(self.window.library.currentItem())
+        self.wait_idle()
+        self.window.proxy_choice.setCurrentIndex(self.window.proxy_choice.findData("dbghelp.dll"))
+        self.assertFalse(self.window.proxy_apply.isEnabled())
+        self.assertFalse(self.window.proxy_next.isEnabled())
+
+    def test_failed_game_inspection_does_not_reuse_previous_proxy_choice(self):
+        self.window.proxy_choice.setCurrentIndex(self.window.proxy_choice.findData("version.dll"))
+        with patch.object(self.controller, "inspect", side_effect=OSError("unreadable game")), \
+                patch.object(QMessageBox, "warning"):
+            self.window.select_game(self.window.library.currentItem())
+            self.wait_idle()
+        self.assertEqual(self.window.proxy_choice.currentData(), "auto")
+        self.assertFalse(self.window.proxy_apply.isEnabled())
+
     def test_conflict_and_pending_state_prevent_launch(self):
         self.controller.conflicts = ["Original backup is missing"]
         self.window.select_game(self.window.library.currentItem())
@@ -216,7 +283,7 @@ class GuiTests(unittest.TestCase):
                 setattr(self.controller, field, [])
 
     def test_failed_operation_refreshes_installation_health(self):
-        def failed_install(action, game):
+        def failed_install(action, game, **kwargs):
             self.controller.installed = True
             self.controller.conflicts = ["An original backup needs attention after recovery."]
             raise RuntimeError("Fixture operation failed")

@@ -8,6 +8,7 @@ from contextlib import contextmanager
 import fcntl
 import hashlib
 import importlib.util
+import inspect as signature_inspect
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -44,6 +45,7 @@ _module_lock = threading.Lock()
 _missing = object()
 # Persistent ownership marker: retain its original bytes across branding changes.
 _backup_marker = b"NR Linux Manager original backups\n"
+_proxy_config = "amdnr-linux/proxy.json"
 
 
 def _sha(path):
@@ -56,11 +58,17 @@ def _load_modules(root):
     # bindings only while loading; each backend retains its own module objects
     # and ROOT constants. Do not modify another backend's modules or sys.path.
     with _module_lock:
-        saved = {name: sys.modules.get(name, _missing) for name in ("launch", "manage")}
+        saved = {name: sys.modules.get(name, _missing) for name in ("proxies", "runtimes", "launch", "manage")}
         loaded = {}
         try:
-            for name in ("launch", "manage", "setup"):
-                spec = importlib.util.spec_from_file_location(f"amdnr_launcher_{id(root)}_{name}", root / "linux" / (name + ".py"))
+            for name in ("proxies", "runtimes", "launch", "manage", "setup"):
+                source = root / "linux" / (name + ".py")
+                if name in ("proxies", "runtimes") and not source.is_file():
+                    # Old release scripts have no helper. Use this launcher's
+                    # trusted copy; alternate DLLs and optional components still
+                    # require support in the actual game package before installation.
+                    source = Path(__file__).resolve().parents[1] / (name + ".py")
+                spec = importlib.util.spec_from_file_location(f"amdnr_launcher_{id(root)}_{name}", source)
                 module = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(module)
                 loaded[name] = module
@@ -110,6 +118,90 @@ def _json_bytes(value):
     return (json.dumps(value, indent=2, sort_keys=True) + "\n").encode()
 
 
+_default_components = {"neural_runtime": "lmxxf", "daniel": None, "optipatcher": None}
+
+
+def _components(value):
+    """Validate a package or record component description; old ones mean lmxxf only.
+
+    An optional "host" entry names an alternate host build; without it the
+    package uses the AMDNR host, so AMDNR descriptions stay unchanged.
+    """
+    if value is None:
+        return dict(_default_components)
+    if (not isinstance(value, dict) or set(value) - {"host"} != set(_default_components) or
+            value["neural_runtime"] not in ("lmxxf", "daniel") or
+            (value["neural_runtime"] == "daniel") != isinstance(value["daniel"], dict)):
+        raise ValueError("invalid optional component metadata")
+    for name in ("daniel", "optipatcher", "host"):
+        item = value.get(name)
+        if item is not None and (not isinstance(item, dict) or not isinstance(item.get("version"), str) or
+                                 not re.fullmatch(r"[0-9a-f]{64}", item.get("sha256", ""))):
+            raise ValueError(f"invalid {name} component metadata")
+    if "host" in value and (value["host"] is None or value["neural_runtime"] != "daniel" or
+                            not re.fullmatch(r"[a-z][a-z0-9]{0,15}", value["host"].get("build", "")) or
+                            value["host"]["build"] == "amdnr"):
+        raise ValueError("invalid host component metadata")
+    return value
+
+
+def host_key(components):
+    """The host build a component description uses; "amdnr" when none is named."""
+    return ((components or {}).get("host") or {}).get("build", "amdnr")
+
+
+def ini_value(data, section, key):
+    """Read one effective key from INI bytes without interpreting anything else."""
+    current, value = None, None
+    for line in data.decode("utf-8", "surrogateescape").splitlines():
+        stripped = line.strip().lstrip("\ufeff")
+        if stripped.startswith("[") and stripped.endswith("]"):
+            current = stripped[1:-1].strip()
+        elif current == section and "=" in stripped and not stripped.startswith((";", "#")):
+            name, _, text = stripped.partition("=")
+            if name.strip() == key:
+                value = text.strip()
+    return value
+
+
+def ini_with(data, settings):
+    """Set (section, key) values in INI bytes, keeping every other byte.
+
+    Existing keys keep their line ending; missing keys go at the end of their
+    section, and a missing section is appended. Comments are never edited.
+    """
+    lines = data.decode("utf-8", "surrogateescape").splitlines(keepends=True)
+    newline = "\r\n" if any(line.endswith("\r\n") for line in lines) else "\n"
+    pending = dict(settings)
+    section, ends = None, {}
+    for index, line in enumerate(lines):
+        stripped = line.strip().lstrip("\ufeff")
+        if stripped.startswith("[") and stripped.endswith("]"):
+            section = stripped[1:-1].strip()
+            ends[section] = index + 1
+        elif section is not None and "=" in stripped and not stripped.startswith((";", "#")):
+            key = (section, stripped.partition("=")[0].strip())
+            ends[section] = index + 1
+            if key in settings:
+                ending = line[len(line.rstrip("\r\n")):] or newline
+                lines[index] = f"{key[1]}={settings[key]}{ending}"
+                pending.pop(key, None)
+    missing = {}
+    for (section_name, key), value in pending.items():
+        missing.setdefault(section_name, []).append(f"{key}={value}{newline}")
+    # Insert from the last section upwards so earlier positions stay valid.
+    for section_name in sorted((name for name in missing if name in ends), key=ends.get, reverse=True):
+        end = ends[section_name]
+        if not lines[end - 1].endswith(("\n", "\r")):
+            lines[end - 1] += newline
+        lines[end:end] = missing[section_name]
+    for section_name in (name for name in missing if name not in ends):
+        if lines and not lines[-1].endswith(("\n", "\r")):
+            lines[-1] += newline
+        lines += [f"[{section_name}]{newline}", *missing[section_name]]
+    return "".join(lines).encode("utf-8", "surrogateescape")
+
+
 def _state(path):
     if path.is_symlink():
         return {"kind": "link", "target": str(path.readlink())}
@@ -135,6 +227,7 @@ class LauncherBackend:
         self.operation_id = None
         modules = _load_modules(self.release_root)
         self.manage, self.setup, self.launch = modules["manage"], modules["setup"], modules["launch"]
+        self.proxies, self.runtimes = modules["proxies"], modules["runtimes"]
         manifest = self.release_root / "RELEASE-MANIFEST.json"
         self.addon_version = None
         if manifest.is_file():
@@ -173,18 +266,19 @@ class LauncherBackend:
             return None
         receipt = json.loads(path.read_text())
         if (receipt.get("schema") != 1 or receipt.get("game") != str(game) or
-                receipt.get("action") not in ("install", "repair", "update", "uninstall") or
+                receipt.get("action") not in ("install", "repair", "update", "uninstall", "switch_proxy") or
                 not isinstance(receipt.get("operation_id"), str)):
             raise ConflictError("Invalid launcher operation receipt.")
         return receipt
 
-    def _receipt_operation(self, game, action, package_id=None):
+    def _receipt_operation(self, game, action, package_id=None, *, addon_version=_missing):
         token = self.operation_id if self.operation_id is not None else uuid.uuid4().hex
         if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", token):
             raise BackendError("Invalid launcher operation identifier.")
         self.operation_id = None
         receipt = dict(schema=1, game=str(game), action=action, operation_id=token,
-                       addon_version=self.addon_version, package_id=package_id, committed_at=int(time.time()))
+                       addon_version=self.addon_version if addon_version is _missing else addon_version,
+                       package_id=package_id, committed_at=int(time.time()))
         return self._operation(self._receipt_path(game), data=_json_bytes(receipt))
 
     def recover(self, game_dir):
@@ -267,6 +361,12 @@ class LauncherBackend:
             if not isinstance(metadata, dict) or (metadata.get("addon_version") is not None and
                     version_key(metadata["addon_version"]) is None):
                 raise ValueError("invalid launcher version metadata")
+            _components(metadata.get("components"))
+            created = metadata.get("created_directories", [])
+            if not isinstance(created, list):
+                raise ValueError("invalid created directory list")
+            for directory in created:
+                self._safe(game, directory)
             names = []
             for entry in record["files"]:
                 self._safe(game, entry["path"])
@@ -279,6 +379,10 @@ class LauncherBackend:
                 names.append(entry["path"])
             if len(set(names)) != len(names) or len(set(record["installed"])) != len(record["installed"]) or not set(record["installed"]) <= set(names):
                 raise ValueError("duplicate or unknown installed paths")
+            proxy, _ = self._proxy_metadata(record)
+            proxy_paths = [name for name in names if name.casefold() in self.proxies.SUPPORTED]
+            if proxy_paths != [proxy]:
+                raise ValueError("proxy metadata does not match the managed host DLL")
             return record
         except (ValueError, KeyError, TypeError) as error:
             raise ConflictError(f"Cannot trust the existing installation record: {error}") from error
@@ -287,26 +391,67 @@ class LauncherBackend:
     def _version(directory):
         source = directory / "amdnr-linux/SOURCE.txt"
         if source.is_file() and not source.is_symlink():
-            match = re.search(r"Host/runtime: AMDNR ([^,\s]+)", source.read_text(errors="replace"))
+            match = re.search(r"Host/runtime: (?:AMDNR ([^,\s]+)|OptiScaler AMD pre-SR ([^,\s]+))",
+                              source.read_text(errors="replace"))
             if match:
-                return match[1]
+                return match[1] or "presr-" + match[2]
         return "unknown"
 
-    def inspect(self, game_dir):
+    def _proxy_metadata(self, record):
+        metadata = record.get("launcher", {})
+        name = metadata.get("proxy_name", "winmm.dll")
+        if self.proxies.normalize(name) != name:
+            raise ValueError("invalid proxy name in installation record")
+        history = metadata.get("proxy_history", [name])
+        if (not isinstance(history, list) or not history or len(history) > len(self.proxies.SUPPORTED) or
+                any(not isinstance(item, str) or self.proxies.normalize(item) != item for item in history) or
+                len(set(history)) != len(history) or name not in history):
+            raise ValueError("invalid proxy history in installation record")
+        return name, list(history)
+
+    def _owned_file(self, game, record, name, purpose="proxy"):
+        entry = next((entry for entry in record["files"] if entry["path"] == name), None)
+        path = self._safe(game, name)
+        if (entry is None or name not in record["installed"] or not path.is_file() or
+                _sha(path) != entry["sha256"]):
+            raise ConflictError(f"The managed {purpose} file is missing or modified: {name}. Repair the installation first.")
+        return entry, path
+
+    def _switch_support(self, game, record, current):
+        self._owned_file(game, record, current, "host")
+        if current not in self.proxies.candidates(game, current=current):
+            raise ConflictError("Another file occupies the current proxy name with different casing. Preserve it before continuing.")
+        for name in ("amdnr-linux/proxies.py", "amdnr-linux/launch.py", "amdnr-linux/run.sh"):
+            self._owned_file(game, record, name, "launch support")
+        if any(entry["path"] == _proxy_config for entry in record["files"]):
+            self._owned_file(game, record, _proxy_config, "proxy configuration")
+            if self.proxies.read_config(game / "amdnr-linux") != current:
+                raise ConflictError("Proxy configuration disagrees with the installation record. Repair the installation first.")
+        elif (game / _proxy_config).exists() or (game / _proxy_config).is_symlink():
+            raise ConflictError("An unowned proxy configuration already exists. Preserve it before switching.")
+
+    def inspect(self, game_dir, executable=None):
         game = self._game(game_dir)
         result = dict(game_dir=str(game), installed=False, status="not_installed", version=None, addon_version=None,
                       host_version=None, release_root=None,
                       modified=[], missing=[], conflicts=[], health_issues=[], config_modified=False,
-                      runtime_status="unverified",
+                      runtime_status="unverified", components=None, ini_runtime=None,
+                      proxy_name=None, proxy_history=[], proxy_options=[], proxy_next=None,
+                      proxy_switch_supported=False, proxy_switch_issue=None,
                       running=self._running(game), recovery_needed=(self._transaction_dir(game) / "journal.json").exists())
         try:
             record = self._record(game)
             if record:
                 metadata = record.get("launcher", {})
+                proxy, history = self._proxy_metadata(record)
                 result.update(installed=True, version=metadata.get("addon_version") or metadata.get("version", self._version(game)),
                               addon_version=metadata.get("addon_version"), host_version=metadata.get("host_version", self._version(game)),
                               release_root=metadata.get("release_root"),
-                              package_id=record.get("launcher", {}).get("package_id"), status="installed")
+                              package_id=record.get("launcher", {}).get("package_id"), status="installed",
+                              proxy_name=proxy, proxy_history=history, components=_components(metadata.get("components")))
+                ini = self._safe(game, "OptiScaler.ini")
+                if ini.is_file() and not ini.is_symlink() and ini.stat().st_size <= 4 * 1024**2:
+                    result["ini_runtime"] = (ini_value(ini.read_bytes(), "DlssNr", "NrBackend") or "").lower() or None
                 for entry in record["files"]:
                     path = self._safe(game, entry["path"])
                     if not path.is_file():
@@ -327,6 +472,21 @@ class LauncherBackend:
                     result["status"] = "needs_repair"
             elif (game / self.manage.BACKUP).exists():
                 result["conflicts"].append("Original backups exist without an installation record.")
+            available = self.proxies.candidates(game, executable=executable, current=result["proxy_name"])
+            result["proxy_options"] = [dict(name=name, available=name in available, current=name == result["proxy_name"])
+                                       for name in (*available, *(name for name in self.proxies.SUPPORTED if name not in available))]
+            if record:
+                try:
+                    self._switch_support(game, record, result["proxy_name"])
+                except (ValueError, OSError, ConflictError) as error:
+                    result["proxy_switch_issue"] = str(error)
+                else:
+                    result["proxy_switch_supported"] = True
+                    try:
+                        result["proxy_next"] = self.proxies.choose(game, requested="next", executable=executable,
+                                                                  current=result["proxy_name"], tried=result["proxy_history"])
+                    except (ValueError, OSError):
+                        pass  # Exhaustion still permits an explicit manual retry.
         except (ValueError, OSError, ConflictError) as error:
             result["conflicts"].append(str(error))
         if result["conflicts"]:
@@ -399,14 +559,31 @@ class LauncherBackend:
                 break
         raise CompilerNeeded("No native 64-bit d3dcompiler_47.dll was found. Select one from a game installation; Wine's builtin DLL cannot be used.")
 
-    def prepare_package(self, compiler=None, search_roots=None, archive=None):
+    def supports_components(self):
+        """Whether this release can stage danielblnc's runtime and OptiPatcher."""
+        return {"daniel", "optipatcher"} <= signature_inspect.signature(self.setup.prepare).parameters.keys()
+
+    def supports_host_builds(self):
+        """Whether this release can stage an alternate host build instead of AMDNR."""
+        return "host" in signature_inspect.signature(self.setup.prepare).parameters and hasattr(self.runtimes, "HOST_BUILDS")
+
+    def prepare_package(self, compiler=None, search_roots=None, archive=None, components=None):
+        """components: {"daniel": version or None, "optipatcher": version or None,
+        "host": an alternate host build key, or None/"amdnr" for AMDNR}."""
+        options = {key: value for key, value in (components or {}).items() if value and value != "amdnr"}
+        if set(options) - {"daniel", "optipatcher", "host"}:
+            raise BackendError("Unknown optional component.")
+        if options and not self.supports_components():
+            raise BackendError("This Linux package cannot add danielblnc's runtime or OptiPatcher. Update the launcher first.")
+        if "host" in options and not self.supports_host_builds():
+            raise BackendError("This Linux package cannot use another host build. Update the launcher first.")
         self.progress("Finding a native shader compiler…")
         compiler = self._find_compiler(compiler, search_roots or [])
         self.progress("Verifying the release and preparing pinned runtime files…")
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         candidate = Path(tempfile.mkdtemp(prefix="candidate-", dir=self.cache_dir))
         try:
-            package = self.setup.prepare(compiler, archive, candidate / "package", self.cache_dir / "downloads")
+            package = self.setup.prepare(compiler, archive, candidate / "package", self.cache_dir / "downloads", **options)
         except BaseException:
             shutil.rmtree(candidate)
             raise
@@ -426,6 +603,8 @@ class LauncherBackend:
             name = path.relative_to(package).as_posix()
             if name.split("/")[0] in (self.manage.RECORD, self.manage.BACKUP, self.manage.RECORD + ".tmp") or name.startswith("amdnr-linux/prefix"):
                 raise ConflictError(f"Package contains reserved installation state: {name}")
+            if name.casefold() in self.proxies.SUPPORTED and name != "winmm.dll":
+                raise ConflictError("Prepared packages must contain only the canonical winmm.dll host proxy.")
             files[name] = dict(source=path, sha256=_sha(path))
         required = {"winmm.dll", "OptiScaler.ini", "d3d12.dll", "d3d12core.dll", "d3dcompiler_47.dll",
                     "amdnr-linux/run.sh", "amdnr-linux/x86_64-unix/amdhip64_7.so",
@@ -433,6 +612,26 @@ class LauncherBackend:
         if not required <= files.keys() or "amdnr-linux/x86_64-unix/amdhip64_7.dll.so" in files:
             raise BackendError("Not a current prepared PE/Unixlib Linux addon package.")
         return package, files
+
+    def _package_components(self, package, files):
+        """What the package stages; the files must agree with its description."""
+        try:
+            path = files.get("amdnr-linux/components.json")
+            components = _components(json.loads(path["source"].read_text()) if path else None)
+        except (OSError, ValueError) as error:
+            raise ConflictError(f"The prepared package's component list is invalid: {error}") from error
+        daniel = [name for name in (*self.runtimes.DANIEL_FILES,) if name in files]
+        if components["daniel"]:
+            if len(daniel) != len(self.runtimes.DANIEL_FILES) or any(
+                    files[name]["sha256"] != components["daniel"]["pass_sha256"] for name in self.runtimes.DANIEL_PASSES):
+                raise ConflictError("The prepared package's danielblnc runtime files do not match its description.")
+        elif daniel:
+            raise ConflictError("The prepared package has undeclared danielblnc runtime files.")
+        plugin = files.get(self.runtimes.OPTIPATCHER_PATH)
+        if bool(plugin) != bool(components["optipatcher"]) or (
+                plugin and plugin["sha256"] != components["optipatcher"]["sha256"]):
+            raise ConflictError("The prepared package's OptiPatcher plugin does not match its description.")
+        return components
 
     def _prefix_entries(self, game):
         journal = self._safe(game, "amdnr-linux/prefixes.json")
@@ -489,6 +688,9 @@ class LauncherBackend:
             for index, operation in enumerate(operations):
                 path = operation["path"]
                 before = _state(path)
+                if operation.get("require_missing") and (before["kind"] != "missing" or
+                        self.proxies.occupied(game, path.name)):
+                    raise ConflictError(f"A new proxy target became occupied before installation: {path}")
                 entry = dict(path=str(path), before=before, after=operation["after"])
                 if before["kind"] == "file":
                     backup = directory / str(index)
@@ -574,9 +776,11 @@ class LauncherBackend:
                 pass
         shutil.rmtree(directory)
 
-    def _change(self, game_dir, package, mode):
+    def _change(self, game_dir, package, mode, proxy="auto", executable=None, seeds=None):
         game = self._game(game_dir)
         package, candidate = self._package(package)
+        components = self._package_components(package, candidate)
+        identity = hashlib.sha256(_json_bytes({name: info["sha256"] for name, info in candidate.items()})).hexdigest()
         if game == package or game in package.parents or package in game.parents:
             raise ConflictError("Prepared package and game directories must be separate.")
         with self._lock(game):
@@ -585,6 +789,24 @@ class LauncherBackend:
                 raise ConflictError("This game already has an installation or backup. Use Repair or Update.")
             if mode != "install" and not old:
                 raise ConflictError("No managed installation was found. Use Install first.")
+            current, history = self._proxy_metadata(old) if old else (None, [])
+            if (current is not None and isinstance(proxy, str) and proxy.strip().lower() == "auto" and
+                    self.proxies.occupied(game, current, current=current)):
+                raise ConflictError("The current proxy name has a foreign casing collision. Preserve the conflicting file before repairing or updating.")
+            try:
+                selected = self.proxies.choose(game, requested=proxy, executable=executable, current=current,
+                                               tried=history if isinstance(proxy, str) and proxy.strip().lower() == "next" else ())
+            except ValueError as error:
+                raise ConflictError(str(error)) from error
+            if selected != "winmm.dll" and "amdnr-linux/proxies.py" not in candidate:
+                raise ConflictError("This package does not support alternate DLL proxies. Prepare a current package first.")
+            if current is not None and selected != current:
+                self._owned_file(game, old, current, "host")
+            candidate[selected] = candidate.pop("winmm.dll")
+            config_data = _json_bytes({"proxy": selected})
+            candidate[_proxy_config] = {"data": config_data, "sha256": hashlib.sha256(config_data).hexdigest()}
+            if selected not in history:
+                history.append(selected)
             installed_version = old.get("launcher", {}).get("addon_version") if old else None
             if installed_version:
                 candidate_version = version_key(self.addon_version)
@@ -598,15 +820,28 @@ class LauncherBackend:
                         raise ConflictError("Existing Proton prefix ownership must be restored before installing.")
             previous = {entry["path"]: entry for entry in old["files"]} if old else {}
             installed = set(old["installed"]) if old else set()
+            self._component_settings(game, old, candidate, components, seeds)
+            previous_ini = candidate["OptiScaler.ini"].pop("previous", None)
+            metadata = old.get("launcher", {}) if old else {}
+            created = set(metadata.get("created_directories", []))
+            for name in candidate:
+                for parent in PurePosixPath(name).parents:
+                    if parent.parts and not (game / parent).exists():
+                        created.add(parent.as_posix())
             operations, files = [], []
             marker = self._safe(game, self.manage.BACKUP + "/.launcher-backup-v1")
             if not marker.exists():
                 operations.append(self._operation(marker, data=_backup_marker))
             elif marker.read_bytes() != _backup_marker:
                 raise ConflictError("The original-backup folder contains an unrecognized launcher marker.")
+            if previous_ini is not None:
+                operations.append(self._operation(self._safe(self.state_dir, "configs/" + self._key(game) + ".ini"),
+                                                  data=previous_ini))
             for name, info in candidate.items():
                 target = self._safe(game, name)
                 prior = previous.get(name)
+                if name == selected and prior is None and (target.exists() or target.is_symlink()):
+                    raise ConflictError(f"The selected proxy slot became occupied: {name}")
                 existed = prior["existed"] if prior else target.exists()
                 backup = self._safe(game, self.manage.BACKUP + "/" + name)
                 if prior and name in installed and existed and not backup.is_file():
@@ -619,7 +854,8 @@ class LauncherBackend:
                     if backup.exists():
                         raise ConflictError(f"Unexpected original backup: {backup}")
                     operations.append(self._operation(backup, source=target))
-                preserve = old is not None and name == "OptiScaler.ini" and target.is_file()
+                preserve = (old is not None and name == "OptiScaler.ini" and target.is_file()
+                            and not info.get("rewritten"))
                 checksum = _sha(target) if preserve else info["sha256"]
                 entry = dict(path=name, sha256=checksum, existed=existed)
                 if existed:
@@ -627,7 +863,10 @@ class LauncherBackend:
                 files.append(entry)
                 restore_wrapper_mode = name == "amdnr-linux/run.sh" and target.is_file() and not os.access(target, os.X_OK)
                 if not preserve and (not target.is_file() or _sha(target) != checksum or restore_wrapper_mode):
-                    operations.append(self._operation(target, source=info["source"]))
+                    operation = self._operation(target, **{key: info[key] for key in ("source", "data") if key in info})
+                    if name == selected and prior is None:
+                        operation["require_missing"] = True
+                    operations.append(operation)
             for name, prior in previous.items():
                 if name in candidate or name not in installed:
                     continue
@@ -654,11 +893,12 @@ class LauncherBackend:
                 entry["sha256"] = info["sha256"]
             if prefix_entries:
                 operations.append(self._operation(self._safe(game, "amdnr-linux/prefixes.json"), data=_json_bytes(prefix_entries)))
-            identity = hashlib.sha256(_json_bytes({name: info["sha256"] for name, info in candidate.items()})).hexdigest()
             record = dict(version=1, files=files, installed=[entry["path"] for entry in files],
                           launcher=dict(version=self.addon_version or self._version(package), addon_version=self.addon_version,
                                         host_version=self._version(package), release_root=str(self.release_root),
-                                        package_id=identity, updated_at=int(time.time())))
+                                        package_id=identity, updated_at=int(time.time()),
+                                        proxy_name=selected, proxy_history=history, components=components,
+                                        created_directories=sorted(created)))
             operations.append(self._operation(self._safe(game, self.manage.RECORD), data=_json_bytes(record)))
             receipt = self._receipt_operation(game, mode, identity)
             record["launcher"]["operation_id"] = json.loads(receipt["data"])["operation_id"]
@@ -667,16 +907,112 @@ class LauncherBackend:
             self.progress({"install": "Installing", "repair": "Repairing", "update": "Updating"}[mode] + " the Linux addon…")
             self._commit(game, operations)
             self.progress("Installation ready. Your original backups and settings have been preserved.")
-        return self.inspect(game)
+        return self.inspect(game, executable=executable)
 
-    def install(self, game_dir, package):
-        return self._change(game_dir, package, "install")
+    def _component_settings(self, game, old, candidate, components, seeds):
+        """Keep OptiScaler.ini consistent with the files being installed.
 
-    def repair(self, game_dir, package):
-        return self._change(game_dir, package, "repair")
+        A fresh install starts from the package's INI plus per-game seeds. An
+        existing INI is preserved, except where the chosen components changed
+        or the selected runtime's files would no longer exist; then only those
+        keys are rewritten, keeping the user's other settings and comments.
+        """
+        source = candidate.get("OptiScaler.ini")
+        target = self._safe(game, "OptiScaler.ini")
+        if old is None or not target.is_file():
+            if not seeds:
+                return
+            data = ini_with(Path(source["source"]).read_bytes(), seeds)
+        else:
+            before = _components(old.get("launcher", {}).get("components"))
+            current = target.read_bytes()
+            if host_key(components) != host_key(before):
+                # Host builds read different settings: start from the new host's
+                # own INI; _change keeps the previous one in the state folder.
+                data = ini_with(Path(source["source"]).read_bytes(), seeds or {})
+                candidate["OptiScaler.ini"] = dict(data=data, sha256=hashlib.sha256(data).hexdigest(),
+                                                   rewritten=True, previous=current)
+                return
+            settings = {}
+            if components["neural_runtime"] != before["neural_runtime"] or (
+                    components["neural_runtime"] == "lmxxf" and
+                    (ini_value(current, "DlssNr", "NrBackend") or "").lower() == "daniel"):
+                settings[("DlssNr", "NrBackend")] = components["neural_runtime"]
+            if bool(components["optipatcher"]) != bool(before["optipatcher"]):
+                default = ini_value(Path(source["source"]).read_bytes(), "Plugins", "LoadAsiPlugins") or "auto"
+                settings[("Plugins", "LoadAsiPlugins")] = "true" if components["optipatcher"] else default
+            if not settings:
+                return
+            data = ini_with(current, settings)
+        candidate["OptiScaler.ini"] = dict(data=data, sha256=hashlib.sha256(data).hexdigest(), rewritten=True)
 
-    def update(self, game_dir, package):
-        return self._change(game_dir, package, "update")
+    def install(self, game_dir, package, proxy="auto", executable=None, seeds=None):
+        return self._change(game_dir, package, "install", proxy, executable, seeds)
+
+    # seeds apply only where OptiScaler.ini starts fresh: a missing INI or a host build change.
+    def repair(self, game_dir, package, proxy="auto", executable=None, seeds=None):
+        return self._change(game_dir, package, "repair", proxy, executable, seeds)
+
+    def update(self, game_dir, package, proxy="auto", executable=None, seeds=None):
+        return self._change(game_dir, package, "update", proxy, executable, seeds)
+
+    def switch_proxy(self, game_dir, proxy="next", executable=None):
+        """Move the verified installed host to a safe alias without downloads."""
+        game = self._game(game_dir)
+        with self._lock(game):
+            record = self._record(game)
+            if record is None:
+                raise ConflictError("No managed installation was found. Install the addon first.")
+            current, history = self._proxy_metadata(record)
+            self._switch_support(game, record, current)
+            try:
+                selected = self.proxies.choose(game, requested=proxy, executable=executable,
+                                               current=current, tried=history if isinstance(proxy, str) and proxy.strip().lower() == "next" else ())
+            except ValueError as error:
+                raise ConflictError(str(error)) from error
+            entries = {entry["path"]: entry for entry in record["files"]}
+            host_entry, host = self._owned_file(game, record, current, "host")
+            operations = []
+            if selected != current:
+                # Copy first: the old host remains the verified source until its
+                # new alias has been committed. Recovery snapshots cover both.
+                operation = self._operation(self._safe(game, selected), source=host)
+                operation["require_missing"] = True
+                operations.append(operation)
+                if host_entry["existed"]:
+                    backup = self._safe(game, self.manage.BACKUP + "/" + current)
+                    if not backup.is_file() or (host_entry.get("backup_sha256") and _sha(backup) != host_entry["backup_sha256"]):
+                        raise ConflictError(f"Original proxy backup is missing or modified: {current}")
+                    operations.append(self._operation(host, source=backup))
+                    operations.append(self._operation(backup))
+                else:
+                    operations.append(self._operation(host))
+                entries.pop(current)
+                entries[selected] = dict(path=selected, sha256=host_entry["sha256"], existed=False)
+            config = _json_bytes({"proxy": selected})
+            prior_config = entries.get(_proxy_config)
+            if prior_config and prior_config["existed"]:
+                backup = self._safe(game, self.manage.BACKUP + "/" + _proxy_config)
+                if not backup.is_file() or (prior_config.get("backup_sha256") and _sha(backup) != prior_config["backup_sha256"]):
+                    raise ConflictError("Original proxy configuration backup is missing or modified.")
+            entries[_proxy_config] = dict(prior_config or {"path": _proxy_config, "existed": False},
+                                          sha256=hashlib.sha256(config).hexdigest())
+            operations.append(self._operation(self._safe(game, _proxy_config), data=config))
+            if selected not in history:
+                history.append(selected)
+            metadata = record.setdefault("launcher", {})
+            metadata.update(proxy_name=selected, proxy_history=history, updated_at=int(time.time()))
+            record["files"] = list(entries.values())
+            record["installed"] = [name for name in record["installed"] if name not in (current, _proxy_config)]
+            record["installed"].extend([selected, _proxy_config])
+            receipt = self._receipt_operation(game, "switch_proxy", metadata.get("package_id"),
+                                              addon_version=metadata.get("addon_version"))
+            metadata["operation_id"] = json.loads(receipt["data"])["operation_id"]
+            operations.extend([self._operation(self._safe(game, self.manage.RECORD), data=_json_bytes(record)), receipt])
+            self.progress(f"Switching the game proxy to {selected}…")
+            self._commit(game, operations)
+            self.progress("Proxy changed. Launch the game to check whether its host loads correctly.")
+        return self.inspect(game, executable=executable)
 
     def uninstall(self, game_dir):
         game = self._game(game_dir)
@@ -724,9 +1060,18 @@ class LauncherBackend:
                     raise ConflictError("The original-backup folder contains an unrecognized launcher marker.")
                 operations.append(self._operation(marker))
             operations.append(self._receipt_operation(game, "uninstall"))
+            created = record.get("launcher", {}).get("created_directories", [])
             self.progress("Restoring original game and Proton prefix files…")
             self._commit(game, operations)
             self._prune_uninstalled(game)
+            # Directories this launcher created (plugins/) go only when empty.
+            for directory in sorted(created, key=lambda name: len(PurePosixPath(name).parts), reverse=True):
+                path = self._safe(game, directory)
+                if path.is_dir() and not path.is_symlink():
+                    try:
+                        path.rmdir()
+                    except OSError:
+                        pass
             self.progress("Original files restored. Your addon settings are saved in the launcher's state folder.")
         return self.inspect(game)
 
@@ -767,8 +1112,8 @@ class LauncherBackend:
 
     def _startup_evidence(self, game):
         """Collect bounded tails of known logs, never following links or executing them."""
-        names = ["OptiScaler.log", "lmxxf_backend.log", "amd_bridge.log", "amdnr_crash.log",
-                 "amdnr-linux/launch.log", "amdnr-linux/startup.log", "amd_presr.log",
+        names = ["OptiScaler.log", "re2_framework_log.txt", "lmxxf_backend.log", "amd_bridge.log", "amdnr_crash.log",
+                 "amdnr-linux/launch.log", "amdnr-linux/startup.log", "amd_presr.log", "dlssnr_on_amd.log",
                  "amdnr-crash-trace.log"]
         # Previous host sessions help with early failures that truncate the main
         # log. Cap both discovery and the files read in a mod-heavy game folder.

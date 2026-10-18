@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Build a relocatable native Linux launcher from an assembled release addon.
 
+Outputs a .tar.gz portable folder or a single executable .AppImage.
 Build dependencies: Python >= 3.12, binutils/readelf, zstd, network access on the
 first build. Users need none of these tools to start the resulting application.
 No system Python packages or shared libraries are copied into the distribution.
@@ -66,6 +67,19 @@ DOWNLOADS = {
         "https://raw.githubusercontent.com/astral-sh/python-build-standalone/20261013/pythonbuild/downloads.json",
         "0a176490488b79448ef66087e480bf0966c8450849ff0c168a9a26cd1756abea"),
 }
+APPIMAGETOOL = "appimagetool-1.9.1-x86_64.AppImage"
+APPIMAGE_RUNTIME = "appimage-runtime-20251108-x86_64"
+APPIMAGE_DOWNLOADS = {
+    APPIMAGETOOL: (
+        "https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage",
+        "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0"),
+    APPIMAGE_RUNTIME: (
+        "https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64",
+        "2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d"),
+    "LICENSE.AppImage-runtime.txt": (
+        "https://raw.githubusercontent.com/AppImage/type2-runtime/20251108/LICENSE",
+        "aa154fc9070614bbe7921f89db11efd1dba7a1f3a41685958110e2230f9c0ca1"),
+}
 MODULES = {"QtCore", "QtGui", "QtWidgets", "QtNetwork", "QtSvg", "QtSvgWidgets", "QtTest", "QtDBus"}
 PLUGIN_DIRS = {"platformthemes", "platforminputcontexts", "wayland-decoration-client",
                "wayland-graphics-integration-client", "wayland-shell-integration", "xcbglintegrations"}
@@ -76,10 +90,13 @@ BINARIES = {"linux/build/d3d12.dll", "linux/build/d3d12core.dll",
             "linux/build/x86_64-windows/amdhip64_7.dll", "linux/build/x86_64-unix/amdhip64_7.so",
             "linux/build/x86_64-unix/libamdnr_signal_guard.so"}
 REQUIRED_FILES = ("RELEASE-MANIFEST.json", "LICENSE", "linux/launcher.py", "linux/setup.py",
-                  "linux/manage.py", "linux/launch.py", "linux/fetch-rocm.py", "linux/run.sh",
+                  "linux/manage.py", "linux/launch.py", "linux/proxies.py", "linux/runtimes.py",
+                  "linux/fetch-rocm.py", "linux/run.sh",
                   "linux/native_launcher/app.py", "linux/native_launcher/controller.py",
                   "linux/native_launcher/backend.py", "linux/native_launcher/steam.py",
-                  "linux/native_launcher/versions.py",
+                  "linux/native_launcher/artwork.py", "linux/native_launcher/artwork_widgets.py",
+                  "linux/native_launcher/versions.py", "linux/native_launcher/compatibility.py",
+                  "linux/native_launcher/stores.py",
                   "linux/native_launcher/__init__.py", "linux/native_launcher/requirements.txt",
                   "main/AMDNR-source/optiscaler/dlssnr/amd/TemporalStability.h",
                   "main/AMDNR-source/optiscaler/dlssnr/amd/SystemCompiler.h",
@@ -92,8 +109,8 @@ def sha(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def fetch(name, cache):
-    url, expected = DOWNLOADS[name]
+def fetch(name, cache, downloads=DOWNLOADS):
+    url, expected = downloads[name]
     target = cache / name
     if target.exists():
         if target.is_symlink() or not target.is_file() or sha(target) != expected:
@@ -254,6 +271,58 @@ def archive(root, output, epoch):
                     raise ValueError(f"Unexpected bundle file: {path}")
 
 
+def appimage(root, output, cache, version, epoch):
+    """Package the same relocatable tree with a pinned type-2 runtime.
+
+    Both the packaging tool and the application support extraction without FUSE.
+    The supplied runtime prevents appimagetool from fetching a moving release.
+    """
+    for path in root.rglob("*"):
+        if path.is_symlink() and not path.resolve().is_relative_to(root.resolve()):
+            raise ValueError(f"Escaping bundle symlink: {path}")
+    for name in APPIMAGE_DOWNLOADS:
+        fetch(name, cache, APPIMAGE_DOWNLOADS)
+    tool, runtime = cache / APPIMAGETOOL, cache / APPIMAGE_RUNTIME
+    tool.chmod(0o755)
+    # AppRun uses its own location, as does Start.sh, so extracted copies work too.
+    (root / "AppRun").write_text(START)
+    (root / "AppRun").chmod(0o755)
+    for name in ("amdnr-linux-manager.desktop", "amdnr-linux-manager.svg"):
+        shutil.copy2(HERE / "appimage" / name, root / name)
+    (root / ".DirIcon").symlink_to("amdnr-linux-manager.svg")
+    shutil.copy2(cache / "LICENSE.AppImage-runtime.txt", root / "runtime/licenses")
+    metadata_path = root / "RUNTIME-MANIFEST.json"
+    metadata = json.loads(metadata_path.read_text())
+    metadata["appimage"] = {
+        "appimagetool": "1.9.1", "runtime": "20251108",
+        "runtime_source": "https://github.com/AppImage/type2-runtime/tree/20251108",
+        "downloads": {name: {"url": url, "sha256": digest}
+                      for name, (url, digest) in APPIMAGE_DOWNLOADS.items()},
+    }
+    metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
+    readme = root / "README.txt"
+    readme.write_text(
+        "AMDNR Linux Manager AppImage\n\n"
+        "Make the .AppImage executable in your file manager, then open it.\n"
+        "From a terminal: chmod +x <file>.AppImage; ./<file>.AppImage\n"
+        "If FUSE is unavailable: ./<file>.AppImage --appimage-extract-and-run\n"
+        "To modify bundled libraries: ./<file>.AppImage --appimage-extract\n"
+        "then edit squashfs-root/ and run squashfs-root/AppRun.\n\n"
+        + readme.read_text())
+    env = dict(os.environ, ARCH="x86_64", VERSION=version, SOURCE_DATE_EPOCH=str(epoch),
+               APPIMAGE_EXTRACT_AND_RUN="1")
+    # Avoid machine-local signing/update settings affecting local builds.
+    for key in ("APPIMAGETOOL_SIGN_PASSPHRASE", "APPIMAGETOOL_RUNTIME_FILE"):
+        env.pop(key, None)
+    run(tool, "--appimage-extract-and-run", "--no-appstream", "--runtime-file", runtime,
+        "--comp", "zstd", root, output, env=env)
+    with output.open("rb") as stream:
+        header = stream.read(20)
+    if header[:11] != b"\x7fELF\x02\x01\x01\x00AI\x02" or header[18:20] != b"\x3e\x00":
+        raise ValueError("Packaging tool did not produce an x86_64 type-2 AppImage")
+    output.chmod(0o755)
+
+
 def build(release, output, cache, version, keep_tree=None):
     validate_release(release)
     # Explicit prerelease suffixes permit scratch builds from an older assembled
@@ -361,8 +430,11 @@ def build(release, output, cache, version, keep_tree=None):
             if path.is_dir():
                 shutil.rmtree(path)
         epoch = int(os.environ.get("SOURCE_DATE_EPOCH", "0"))
-        staged_archive = work / "bundle.tar.gz"
-        archive(bundle, staged_archive, epoch)
+        staged_archive = work / output.name
+        if output.name.endswith(".AppImage"):
+            appimage(bundle, staged_archive, cache, version, epoch)
+        else:
+            archive(bundle, staged_archive, epoch)
         if keep_tree is not None:
             keep_tree.parent.mkdir(parents=True, exist_ok=True)
             shutil.copytree(bundle, keep_tree, symlinks=True)
@@ -374,17 +446,17 @@ def build(release, output, cache, version, keep_tree=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--release-root", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True, help="New .tar.gz archive")
+    parser.add_argument("--output", type=Path, required=True, help="New .tar.gz archive or .AppImage executable")
     parser.add_argument("--cache", type=Path, default=HERE / "build/native-launcher-cache")
-    parser.add_argument("--version", default="0.2.2-preview")
+    parser.add_argument("--version", default="0.3.0-preview")
     parser.add_argument("--keep-tree", type=Path, help="Also keep an extracted tree for desktop testing")
     args = parser.parse_args()
     if sys.version_info < (3, 12) or sys.platform != "linux" or platform.machine() != "x86_64":
         parser.error("Build on x86_64 Linux with Python 3.12 or newer")
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.]+)?", args.version):
         parser.error("Invalid version")
-    if not args.output.name.endswith(".tar.gz"):
-        parser.error("--output must name a .tar.gz archive")
+    if not args.output.name.endswith((".tar.gz", ".AppImage")):
+        parser.error("--output must name a .tar.gz archive or .AppImage executable")
     try:
         build(args.release_root.resolve(), args.output.resolve(), args.cache.resolve(), args.version,
               args.keep_tree.resolve() if args.keep_tree else None)

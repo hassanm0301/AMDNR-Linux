@@ -37,7 +37,7 @@ class BackendTests(unittest.TestCase):
         self.root = Path(temporary.name)
         self.game = self.root / "Game with spaces"
         self.game.mkdir()
-        (self.game / "winmm.dll").write_bytes(b"original user mod")
+        (self.game / "d3d12.dll").write_bytes(b"original user mod")
         (self.game / "OptiScaler.ini").write_bytes(b"original configuration")
         (self.game / "save.dat").write_bytes(b"save game")
         self.initial = snapshot(self.game)
@@ -58,7 +58,7 @@ class BackendTests(unittest.TestCase):
     def package(self, version):
         package = self.root / ("package " + version)
         names = ("winmm.dll", "OptiScaler.ini", "d3d12.dll", "d3d12core.dll", "d3dcompiler_47.dll",
-                 "LmxxfNrRuntime.dll", "LmxxfNrRuntime.pak", "amdnr-linux/run.sh", "amdnr-linux/launch.py",
+                 "LmxxfNrRuntime.dll", "LmxxfNrRuntime.pak", "amdnr-linux/run.sh", "amdnr-linux/launch.py", "amdnr-linux/proxies.py",
                  "amdnr-linux/x86_64-unix/amdhip64_7.so", "amdnr-linux/x86_64-windows/amdhip64_7.dll",
                  "amdnr-linux/x86_64-unix/libamdnr_signal_guard.so")
         for name in names:
@@ -117,6 +117,242 @@ class BackendTests(unittest.TestCase):
         saved = Path(self.backend.diagnostics(self.game)["saved_settings"])
         self.assertEqual(saved.read_bytes(), b"user changed settings")
         self.assertFalse(backup.exists())
+
+    def test_auto_proxy_skips_foreign_names_case_insensitively_and_uninstall_preserves_them(self):
+        foreign = self.game / 'WINMM.DLL'
+        foreign.write_bytes(b'other mod')
+        before = snapshot(self.game)
+        result = self.backend.install(self.game, self.a)
+        self.assertEqual(result['proxy_name'], 'version.dll')
+        self.assertEqual(result['proxy_history'], ['version.dll'])
+        self.assertEqual((self.game / 'version.dll').read_bytes(), b'A winmm.dll')
+        self.assertFalse((self.game / 'winmm.dll').exists())
+        self.assertEqual(json.loads((self.game / 'amdnr-linux/proxy.json').read_text()), {'proxy': 'version.dll'})
+        self.assertEqual(next(option for option in result['proxy_options'] if option['name'] == 'winmm.dll')['available'], False)
+        self.backend.uninstall(self.game)
+        self.assertEqual(snapshot(self.game), before)
+
+    def test_manual_proxy_conflicts_and_reserved_names_are_refused_before_install(self):
+        foreign = self.game / 'VERSION.DLL'
+        foreign.write_bytes(b'game version helper')
+        before = snapshot(self.game)
+        for name in ('version.dll', 'dxgi.dll', 'd3d12.dll', 'd3d11.dll', '../version.dll'):
+            with self.subTest(name=name), self.assertRaises(ConflictError):
+                self.backend.install(self.game, self.a, proxy=name)
+            self.assertEqual(snapshot(self.game), before)
+
+    def test_auto_proxy_honors_selected_executable_imports_and_inspection_order(self):
+        from test_proxies import pe_image
+        executable = self.game / 'ActualGame.exe'
+        executable.write_bytes(pe_image(('WINHTTP.DLL', 'VERSION.DLL')))
+        (self.game / 'Launcher.exe').write_bytes(pe_image(('winmm.dll',)))
+        before = self.backend.inspect(self.game, executable=executable)
+        self.assertEqual(before['proxy_options'][0]['name'], 'winhttp.dll')
+        result = self.backend.install(self.game, self.a, executable=executable)
+        self.assertEqual(result['proxy_name'], 'winhttp.dll')
+        self.assertEqual(result['proxy_next'], 'version.dll')
+
+    def test_selected_proxy_survives_repair_and_update_and_preserves_settings(self):
+        self.backend.install(self.game, self.a, proxy='dbghelp')
+        (self.game / 'OptiScaler.ini').write_bytes(b'user settings')
+        (self.game / 'dbghelp.dll').write_bytes(b'damaged host')
+        self.backend.repair(self.game, self.a)
+        self.assertEqual((self.game / 'dbghelp.dll').read_bytes(), b'A winmm.dll')
+        self.backend.update(self.game, self.b)
+        self.assertEqual(self.backend.inspect(self.game)['proxy_name'], 'dbghelp.dll')
+        self.assertEqual((self.game / 'dbghelp.dll').read_bytes(), b'B winmm.dll')
+        self.assertEqual((self.game / 'OptiScaler.ini').read_bytes(), b'user settings')
+        self.assertFalse((self.game / 'winmm.dll').exists())
+
+    def test_update_can_change_proxy_without_leaving_an_old_host(self):
+        self.backend.install(self.game, self.a, proxy='version.dll')
+        result = self.backend.update(self.game, self.b, proxy='wininet.dll')
+        self.assertEqual(result['proxy_name'], 'wininet.dll')
+        self.assertEqual(result['proxy_history'], ['version.dll', 'wininet.dll'])
+        self.assertFalse((self.game / 'version.dll').exists())
+        self.assertEqual((self.game / 'wininet.dll').read_bytes(), b'B winmm.dll')
+        self.backend.uninstall(self.game)
+        self.assertEqual(snapshot(self.game), self.initial)
+
+    def test_switch_reuses_installed_host_without_downloads_and_preserves_unrelated_files(self):
+        self.backend.install(self.game, self.a)
+        (self.game / 'OptiScaler.ini').write_bytes(b'user settings')
+        (self.game / 'notes.txt').write_bytes(b'notes')
+        backups = snapshot(self.game / self.backend.manage.BACKUP)
+        self.backend.operation_id = 'proxy-switch-token'
+        with patch.object(self.backend, 'prepare_package', side_effect=AssertionError('must not prepare')):
+            result = self.backend.switch_proxy(self.game)
+        self.assertEqual(result['proxy_name'], 'version.dll')
+        self.assertEqual(result['proxy_history'], ['winmm.dll', 'version.dll'])
+        self.assertEqual(result['proxy_next'], 'dbghelp.dll')
+        self.assertFalse((self.game / 'winmm.dll').exists())
+        self.assertEqual((self.game / 'version.dll').read_bytes(), b'A winmm.dll')
+        self.assertEqual((self.game / 'OptiScaler.ini').read_bytes(), b'user settings')
+        self.assertEqual((self.game / 'notes.txt').read_bytes(), b'notes')
+        self.assertEqual(snapshot(self.game / self.backend.manage.BACKUP), backups)
+        receipt = self.backend.operation_receipt(self.game)
+        self.assertEqual(receipt['action'], 'switch_proxy')
+        self.assertEqual(receipt['operation_id'], 'proxy-switch-token')
+        record = json.loads((self.game / self.backend.manage.RECORD).read_text())
+        self.assertEqual(record['launcher']['operation_id'], 'proxy-switch-token')
+        self.assertNotIn('winmm.dll', record['installed'])
+        self.assertIn('version.dll', record['installed'])
+
+    def test_next_proxy_stops_after_all_available_names_were_tried(self):
+        self.backend.install(self.game, self.a)
+        for name in self.backend.proxies.SUPPORTED[1:]:
+            self.assertEqual(self.backend.switch_proxy(self.game, proxy='NEXT')['proxy_name'], name)
+        before = snapshot(self.game)
+        self.assertIsNone(self.backend.inspect(self.game)['proxy_next'])
+        self.assertTrue(self.backend.inspect(self.game)['proxy_switch_supported'])
+        self.assertIsNone(self.backend.inspect(self.game)['proxy_switch_issue'])
+        with self.assertRaisesRegex(ConflictError, 'No untried'):
+            self.backend.switch_proxy(self.game)
+        self.assertEqual(snapshot(self.game), before)
+        self.assertEqual(self.backend.switch_proxy(self.game, proxy='winmm.dll')['proxy_name'], 'winmm.dll')
+        self.assertEqual(len(self.backend.inspect(self.game)['proxy_history']), len(self.backend.proxies.SUPPORTED))
+
+    def test_switch_refuses_foreign_alias_and_modified_or_missing_host(self):
+        self.backend.install(self.game, self.a)
+        alias = self.game / 'VERSION.DLL'
+        alias.write_bytes(b'foreign proxy')
+        before = snapshot(self.game)
+        with self.assertRaisesRegex(ConflictError, 'occupied'):
+            self.backend.switch_proxy(self.game, proxy='version.dll')
+        self.assertEqual(snapshot(self.game), before)
+        host = self.game / 'winmm.dll'
+        for damaged in (True, False):
+            if damaged:
+                host.write_bytes(b'user replacement')
+            else:
+                host.unlink()
+            before = snapshot(self.game)
+            with self.assertRaisesRegex(ConflictError, 'Repair'):
+                self.backend.switch_proxy(self.game)
+            self.assertIsNone(self.backend.inspect(self.game)['proxy_next'])
+            self.assertEqual(snapshot(self.game), before)
+
+    def test_auto_repair_and_update_do_not_change_alias_when_current_has_case_collision(self):
+        self.backend.install(self.game, self.a)
+        (self.game / 'WINMM.DLL').write_bytes(b'unrelated casing collision')
+        before = snapshot(self.game)
+        for action in (self.backend.repair, self.backend.update):
+            with self.subTest(action=action.__name__), self.assertRaisesRegex(ConflictError, 'casing collision'):
+                action(self.game, self.a)
+            self.assertEqual(snapshot(self.game), before)
+        result = self.backend.inspect(self.game)
+        self.assertFalse(result['proxy_switch_supported'])
+        self.assertIn('casing', result['proxy_switch_issue'])
+
+    def test_legacy_proxy_metadata_defaults_to_winmm_and_switch_restores_its_original(self):
+        self.backend.install(self.game, self.a)
+        record_path = self.game / self.backend.manage.RECORD
+        record = json.loads(record_path.read_text())
+        record['launcher'].pop('proxy_name')
+        record['launcher'].pop('proxy_history')
+        record['files'] = [entry for entry in record['files'] if entry['path'] != 'amdnr-linux/proxy.json']
+        record['installed'].remove('amdnr-linux/proxy.json')
+        (self.game / 'amdnr-linux/proxy.json').unlink()
+        original = b'legacy original winmm helper'
+        backup = self.game / self.backend.manage.BACKUP / 'winmm.dll'
+        backup.write_bytes(original)
+        entry = next(item for item in record['files'] if item['path'] == 'winmm.dll')
+        entry.update(existed=True, backup_sha256=self.backend.manage.sha(backup))
+        record_path.write_text(json.dumps(record))
+        self.assertEqual(self.backend.inspect(self.game)['proxy_name'], 'winmm.dll')
+        self.backend.switch_proxy(self.game)
+        self.assertEqual((self.game / 'winmm.dll').read_bytes(), original)
+        self.assertFalse(backup.exists())
+        self.backend.uninstall(self.game)
+        expected = dict(self.initial, **{'winmm.dll': ('file', original)})
+        self.assertEqual(snapshot(self.game), expected)
+
+    def test_failed_switch_rolls_back_alias_config_record_and_receipt(self):
+        self.backend.install(self.game, self.a)
+        before, receipt_before = snapshot(self.game), self.backend.operation_receipt(self.game)
+        apply = self.backend._apply
+
+        def fail(operation):
+            apply(operation)
+            if operation['path'] == self.game / 'amdnr-linux/proxy.json':
+                raise OSError('interrupted proxy configuration')
+
+        with patch.object(self.backend, '_apply', side_effect=fail):
+            with self.assertRaisesRegex(OSError, 'interrupted proxy'):
+                self.backend.switch_proxy(self.game)
+        self.assertEqual(snapshot(self.game), before)
+        self.assertEqual(self.backend.operation_receipt(self.game), receipt_before)
+
+    def test_foreign_case_collision_created_before_commit_is_preserved(self):
+        self.backend.install(self.game, self.a)
+        commit = self.backend._commit
+        before = snapshot(self.game)
+
+        def concurrent_file(game, operations):
+            (self.game / 'VERSION.DLL').write_bytes(b'new unrelated file')
+            return commit(game, operations)
+
+        with patch.object(self.backend, '_commit', side_effect=concurrent_file):
+            with self.assertRaisesRegex(ConflictError, 'became occupied'):
+                self.backend.switch_proxy(self.game, proxy='version.dll')
+        expected = dict(before, **{'VERSION.DLL': ('file', b'new unrelated file')})
+        self.assertEqual(snapshot(self.game), expected)
+
+    def test_switch_refuses_modified_wrapper_configuration_and_invalid_metadata(self):
+        self.backend.install(self.game, self.a)
+        config = self.game / 'amdnr-linux/proxy.json'
+        config.write_text('{"proxy":"dbghelp.dll"}')
+        before = snapshot(self.game)
+        with self.assertRaisesRegex(ConflictError, 'Repair'):
+            self.backend.switch_proxy(self.game)
+        self.assertEqual(snapshot(self.game), before)
+        self.backend.repair(self.game, self.a)
+        record_path = self.game / self.backend.manage.RECORD
+        original_record = json.loads(record_path.read_text())
+        for metadata in ({'proxy_name': 'd3d12.dll'}, {'proxy_history': ['winmm.dll', 'winmm.dll']},
+                         {'proxy_name': 'version.dll', 'proxy_history': ['version.dll']}):
+            record = json.loads(json.dumps(original_record))
+            record['launcher'].update(metadata)
+            record_path.write_text(json.dumps(record))
+            with self.subTest(metadata=metadata), self.assertRaises(ConflictError):
+                self.backend.switch_proxy(self.game)
+            self.assertEqual(self.backend.inspect(self.game)['status'], 'conflict')
+
+    @unittest.skipUnless(hasattr(os, 'fork'), 'Linux crash-recovery test')
+    def test_interrupted_switch_is_recovered_as_one_transaction(self):
+        self.backend.install(self.game, self.a)
+        before, receipt_before = snapshot(self.game), self.backend.operation_receipt(self.game)
+        child = os.fork()
+        if child == 0:
+            apply = self.backend._apply
+
+            def interrupted(operation):
+                apply(operation)
+                if operation['path'] == self.game / 'amdnr-linux/proxy.json':
+                    os._exit(91)
+
+            self.backend._apply = interrupted
+            self.backend.switch_proxy(self.game)
+            os._exit(92)
+        _, status = os.waitpid(child, 0)
+        self.assertEqual(os.waitstatus_to_exitcode(status), 91)
+        self.assertTrue(self.backend.inspect(self.game)['recovery_needed'])
+        self.backend.recover(self.game)
+        self.assertEqual(snapshot(self.game), before)
+        self.assertEqual(self.backend.operation_receipt(self.game), receipt_before)
+
+    def test_legacy_wrapper_without_proxy_support_requires_repair_before_switch(self):
+        (self.a / 'amdnr-linux/proxies.py').unlink()
+        self.backend.install(self.game, self.a)
+        before = snapshot(self.game)
+        self.assertIsNone(self.backend.inspect(self.game)['proxy_next'])
+        self.assertFalse(self.backend.inspect(self.game)['proxy_switch_supported'])
+        self.assertIn('Repair', self.backend.inspect(self.game)['proxy_switch_issue'])
+        with self.assertRaisesRegex(ConflictError, 'Repair'):
+            self.backend.switch_proxy(self.game)
+        self.assertEqual(snapshot(self.game), before)
+        self.backend.repair(self.game, self.b)
+        self.assertEqual(self.backend.switch_proxy(self.game)['proxy_name'], 'version.dll')
 
     def test_redundant_install_refused_and_repair_restores_damaged_files(self):
         self.backend.install(self.game, self.a)
@@ -192,6 +428,8 @@ class BackendTests(unittest.TestCase):
         for index in range(12):
             (self.game / f"OptiScaler.previous-{index}.Fixture.log").write_text("old successful frame\n" * 2000)
         (self.game / "OptiScaler.log").write_text("prior session loaded and rendered\n")
+        framework_log = "old REFramework startup\n" * 2000 + "Waiting for startup\n"
+        (self.game / "re2_framework_log.txt").write_text(framework_log)
         os.utime(self.game / "OptiScaler.log", (1, 1))
         os.mkfifo(self.game / "lmxxf_backend.log")
         before = snapshot(self.game)
@@ -201,6 +439,9 @@ class BackendTests(unittest.TestCase):
         self.assertIn("historical", report["startup_summary"])
         self.assertLessEqual(len(report["startup_evidence"]), 8)
         self.assertTrue(any(entry["truncated"] for entry in report["startup_evidence"]))
+        framework = next(entry for entry in report["startup_evidence"] if entry["name"] == "re2_framework_log.txt")
+        self.assertEqual(framework["tail"], framework_log[-16384:])
+        self.assertTrue(framework["truncated"])
         self.assertTrue(all(len(entry["tail"]) <= 16384 for entry in report["startup_evidence"]))
         self.assertTrue(all("must never be included" not in entry["tail"] for entry in report["startup_evidence"]))
         self.assertTrue(any("amd_bridge.log" in error for error in report["startup_errors"]))
@@ -208,12 +449,12 @@ class BackendTests(unittest.TestCase):
 
     def test_legacy_cli_install_is_adopted_without_changing_original_backups(self):
         self.backend.manage.install(self.a, self.game)
-        original = (self.game / self.backend.manage.BACKUP / "winmm.dll").read_bytes()
+        original = (self.game / self.backend.manage.BACKUP / "d3d12.dll").read_bytes()
         (self.game / "winmm.dll").unlink()
         self.backend.repair(self.game, self.b)
         record = json.loads((self.game / self.backend.manage.RECORD).read_text())
         self.assertEqual(record["launcher"]["version"], "B")
-        self.assertEqual((self.game / self.backend.manage.BACKUP / "winmm.dll").read_bytes(), original)
+        self.assertEqual((self.game / self.backend.manage.BACKUP / "d3d12.dll").read_bytes(), original)
         self.backend.uninstall(self.game)
         self.assertEqual(snapshot(self.game), self.initial)
 
@@ -349,7 +590,7 @@ class BackendTests(unittest.TestCase):
 
     def test_changed_original_backup_blocks_update_and_uninstall(self):
         self.backend.install(self.game, self.a)
-        (self.game / self.backend.manage.BACKUP / "winmm.dll").write_bytes(b"changed backup")
+        (self.game / self.backend.manage.BACKUP / "d3d12.dll").write_bytes(b"changed backup")
         with self.assertRaisesRegex(ConflictError, "backup was modified"):
             self.backend.update(self.game, self.b)
         with self.assertRaisesRegex(ConflictError, "backup was modified"):
