@@ -279,8 +279,11 @@ AMDNR files**). Originals in `.amdnr-linux-backup` and in the prefix journal go
 back. A file is removed only on evidence: this addon's folders, or AMDNR named
 inside the host DLL, `OptiScaler.ini` or the host's logs; the patched
 vkd3d-proton DLLs and the shader compiler only beside this addon's own traces.
-Finished report zips, other OptiScaler builds, links and anything it cannot
-attribute stay.
+Finished report zips, other OptiScaler builds and anything it cannot attribute
+stay. A link goes with the file it points to only when it looks like a link-based
+mod manager's (Amethyst, Vortex): a direct link to a regular file outside the
+game folder whose path ends in the link's own relative path, which passes the
+same checks. Other links stay.
 
 ## Validation
 

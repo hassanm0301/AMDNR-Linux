@@ -232,6 +232,16 @@ Close the game and Steam before using the selected game’s actions:
   DLL, `OptiScaler.ini`, the host's logs). Finished `AMDNR-report-*.zip` reports,
   other mods (including another OptiScaler build) and files it cannot attribute
   stay where they are; the list names them and says why.
+  A mod manager that deploys with links (such as Amethyst) can take over an
+  installation: it moves AMDNR's files into its own folder (Amethyst's
+  `overwrite`) and links them back, and the manager then reports the record as a
+  link instead of an installation. Remove leftover AMDNR files removes such a
+  link together with the file it points to, so the mod manager has nothing to
+  put back. It does this only for a link to a file with the same relative path in
+  the other folder that passes the same checks; the list names that folder. Other
+  links stay. A copy in that folder of a file that is not linked from the game
+  folder stays too; delete it there, or let the mod manager link it again and
+  repeat the cleanup.
 
 A failed or interrupted operation retains recovery information. With the game
 and Steam closed, repeat the action to recover it before continuing. If a file,

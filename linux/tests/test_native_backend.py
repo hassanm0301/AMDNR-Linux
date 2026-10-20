@@ -1,4 +1,5 @@
 """Native launcher transactions against isolated files; no games or GPU work."""
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -926,6 +927,141 @@ class BackendTests(unittest.TestCase):
         with self.assertRaisesRegex(ConflictError, "unrecognized launcher marker"):
             self.backend.clean(self.game)
         self.assertTrue((backup / ".launcher-backup-v1").exists())
+
+    def manage_with_links(self, keep=()):
+        """Do what Amethyst does with files it did not deploy: move them into its folder and link them back."""
+        overwrite = self.root / "mod manager/overwrite"
+        for path in sorted(self.game.rglob("*")):
+            relative = path.relative_to(self.game).as_posix()
+            if path.is_file() and not path.is_symlink() and relative not in keep:
+                target = overwrite / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                path.rename(target)
+                path.symlink_to(target)
+        return overwrite
+
+    def test_files_a_mod_manager_linked_back_go_with_their_links(self):
+        self.backend.install(self.game, self.realistic("C"))
+        prefix, compiler = self.prefix()
+        self.game_session()
+        (self.game / "OptiScaler.ini").write_bytes(b"; AMDNR settings the player changed\n")
+        overwrite = self.manage_with_links(keep={"save.dat", "AMDNR-report-Game-20261019.zip"})
+        # Other mods the manager links in stay, whether or not their names are AMDNR's.
+        (overwrite / "reframework").mkdir()
+        (overwrite / "reframework/autorun.lua").write_bytes(b"mod script")
+        (self.game / "reframework").mkdir()
+        (self.game / "reframework/autorun.lua").symlink_to(overwrite / "reframework/autorun.lua")
+        loader = self.root / "mod manager/mods/REFramework/dinput8.dll"
+        loader.parent.mkdir(parents=True)
+        loader.write_bytes(compiler_data(b"REFramework"))
+        (self.game / "dinput8.dll").symlink_to(loader)
+        result = self.backend.inspect(self.game)
+        self.assertFalse(result["installed"])
+        self.assertIn("The installation record is a link", result["conflicts"][0])
+        plan = result["leftovers"]
+        self.assertEqual((plan["issues"], plan["kept"]), ([], []))
+        self.assertEqual(sorted(plan["restore"]), ["OptiScaler.ini", "d3d12.dll"])
+        self.assertEqual(sorted(Path(item["path"]).name for item in plan["prefix"]), ["AMDHIP64_7.DLL", "d3dcompiler_47.dll"])
+        self.assertTrue(plan["save_config"])
+        for name in (self.backend.manage.RECORD, "winmm.dll", "OptiScaler.log", "amdnr-linux/prefixes.json"):
+            self.assertIn(name, plan["remove"])
+            self.assertEqual(plan["linked"][name], str(overwrite / name))
+        # A restored original replaces the link; the AMDNR file it pointed to goes.
+        self.assertEqual(plan["linked"]["d3d12.dll"], str(overwrite / "d3d12.dll"))
+        self.assertTrue(set(plan["linked"]) <= set(plan["remove"]) | set(plan["restore"]))
+        self.assertNotIn("dinput8.dll", plan["linked"])
+        before = snapshot(self.game), snapshot(overwrite.parent)
+        self.assertEqual(self.backend.leftovers(self.game), plan)
+        self.assertEqual((snapshot(self.game), snapshot(overwrite.parent)), before)  # listing changes nothing
+        self.backend.clean(self.game)
+        self.assertEqual(snapshot(self.game), {**self.initial, "AMDNR-report-Game-20261019.zip": ("file", b"PK report"),
+                                               "reframework/autorun.lua": ("link", str(overwrite / "reframework/autorun.lua")),
+                                               "dinput8.dll": ("link", str(loader))})
+        self.assertEqual(sorted(path.name for path in self.game.iterdir() if path.is_dir()), ["reframework"])
+        self.assertEqual(snapshot(overwrite.parent), {"overwrite/reframework/autorun.lua": ("file", b"mod script"),
+                                                      "mods/REFramework/dinput8.dll": ("file", compiler_data(b"REFramework"))})
+        # Only the manager's folders that held removed files go, never its own folder.
+        self.assertEqual([path.name for path in overwrite.iterdir()], ["reframework"])
+        self.assertEqual(compiler.read_bytes(), b"original prefix compiler")
+        self.assertFalse((compiler.parent / "AMDHIP64_7.DLL").exists())
+        saved = Path(self.backend.diagnostics(self.game)["saved_settings"])
+        self.assertEqual(saved.read_bytes(), b"; AMDNR settings the player changed\n")
+
+    def test_failed_clean_puts_back_links_and_the_files_they_pointed_to(self):
+        self.backend.install(self.game, self.realistic("C"))
+        self.game_session()
+        overwrite = self.manage_with_links(keep={"save.dat", "AMDNR-report-Game-20261019.zip"})
+        before = snapshot(self.game), snapshot(overwrite)
+        apply = self.backend._apply
+
+        def fail(operation):
+            apply(operation)
+            if "via" in operation:
+                raise OSError("disk removed")
+
+        with patch.object(self.backend, "_apply", side_effect=fail):
+            with self.assertRaisesRegex(OSError, "disk removed"):
+                self.backend.clean(self.game)
+        self.assertEqual((snapshot(self.game), snapshot(overwrite)), before)
+        self.backend.clean(self.game)
+        self.assertEqual(snapshot(overwrite), {})
+
+    def test_recovery_restores_an_outside_file_only_beside_its_link(self):
+        outside = self.root / "elsewhere/winmm.dll"
+        outside.parent.mkdir()
+        directory = self.backend._transaction_dir(self.game)
+        directory.mkdir(parents=True)
+        (directory / "0").write_bytes(b"planted")
+        planted = dict(path=str(outside), before={"kind": "file", "sha256": hashlib.sha256(b"planted").hexdigest()},
+                       after={"kind": "missing"}, backup="0", created_dirs=[], via=str(self.game / "winmm.dll"))
+        link = dict(path=str(self.game / "winmm.dll"), before={"kind": "link", "target": str(self.root / "winmm.dll")},
+                    after={"kind": "missing"}, created_dirs=[])
+        for entries in ([planted], [link, planted]):
+            (directory / "journal.json").write_text(json.dumps(
+                {"schema": 1, "game": str(self.game), "status": "prepared", "entries": entries}))
+            with self.assertRaisesRegex(ConflictError, "Unsafe recovery path"):
+                self.backend._recover(self.game)
+            self.assertFalse(outside.exists())
+        link["before"]["target"] = str(outside)
+        (directory / "journal.json").write_text(json.dumps(
+            {"schema": 1, "game": str(self.game), "status": "prepared", "entries": [link, planted]}))
+        self.backend._recover(self.game)
+        self.assertEqual(outside.read_bytes(), b"planted")
+        self.assertEqual((self.game / "winmm.dll").readlink(), outside)
+
+    def test_links_that_do_not_mirror_a_mod_manager_folder_are_kept(self):
+        overwrite = self.root / "mod manager/overwrite"
+        (overwrite / "logs").mkdir(parents=True)
+        (self.game / "amdnr-linux").mkdir()
+        (self.game / "amdnr-linux/launch.log").write_text("Launch setup failed\n")
+        # Mirrored, but another OptiScaler build.
+        (overwrite / "dxgi.dll").write_bytes(host_data(amdnr=False))
+        (self.game / "dxgi.dll").symlink_to(overwrite / "dxgi.dll")
+        # A link to a link.
+        (overwrite / "lmxxf_backend.log").write_bytes(b"hip=1")
+        (self.root / "hop").mkdir()
+        (self.root / "hop/lmxxf_backend.log").symlink_to(overwrite / "lmxxf_backend.log")
+        (self.game / "lmxxf_backend.log").symlink_to(self.root / "hop/lmxxf_backend.log")
+        # Into the game folder.
+        (self.game / "libxess.dll").write_bytes(b"the game's XeSS")
+        (self.game / "OptiScaler").mkdir()
+        (self.game / "OptiScaler/libxess.dll").symlink_to("../libxess.dll")
+        # A different path in the other folder.
+        (overwrite / "logs/bridge.log").write_bytes(b"bridge")
+        (self.game / "amd_bridge.log").symlink_to(overwrite / "logs/bridge.log")
+        before = snapshot(self.root)
+        plan = self.backend.leftovers(self.game)
+        self.assertEqual((plan["remove"], plan["linked"]), (["amdnr-linux/launch.log"], {}))
+        link = "a link, left for whatever made it"
+        self.assertEqual(sorted((item["path"], item["reason"]) for item in plan["kept"]),
+                         [("OptiScaler/libxess.dll", link), ("amd_bridge.log", link),
+                          ("dxgi.dll", "an OptiScaler build that does not name AMDNR"), ("lmxxf_backend.log", link)])
+        self.backend.clean(self.game)
+        del before[(self.game / "amdnr-linux/launch.log").relative_to(self.root).as_posix()]
+        self.assertEqual({name: value for name, value in snapshot(self.root).items()
+                          if name.startswith(("mod manager/", "hop/", self.game.name + "/"))},
+                         {name: value for name, value in before.items()
+                          if name.startswith(("mod manager/", "hop/", self.game.name + "/"))})
 
     def test_failed_clean_rolls_back_every_file(self):
         self.backend.install(self.game, self.realistic("C"))

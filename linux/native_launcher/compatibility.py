@@ -94,11 +94,13 @@ def seeds(game, executable=None):
     return settings
 
 
-def notices(game, managed=False):
+def notices(game, managed=False, leftovers=()):
     """Return [{"level": "confirm"|"warning"|"info", "text": ...}] for this game.
 
     managed: this launcher's installation record exists, so OptiScaler files in
     the folder are ours and not a separate installation.
+    leftovers: names Remove leftover AMDNR files takes away; OptiScaler files
+    among them are an earlier AMDNR installation's, not a separate one.
     """
     found = []
     if game.appid in NO_TEMPORAL_UPSCALER:
@@ -114,7 +116,8 @@ def notices(game, managed=False):
     if game.exe_dir is None:
         return found
     names = _names(game.exe_dir)
-    if not managed and ("optiscaler.ini" in names or "optiscaler.dll" in names):
+    other = {"optiscaler.ini", "optiscaler.dll"} & names - {name.lower() for name in leftovers}
+    if not managed and other:
         found.append(dict(level="warning", text=(
             "Another OptiScaler setup appears to be in the game folder (OptiScaler.ini or OptiScaler.dll). Remove "
             "its proxy DLL first: two hosts in one game crash. Its INI is backed up and replaced on install.")))

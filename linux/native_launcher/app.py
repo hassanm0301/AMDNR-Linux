@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Original Qt Widgets interface for the independent Linux manager."""
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import os
 import sys
 
@@ -526,6 +526,11 @@ class Window(QMainWindow):
         text += f"{count} item{'s' if count != 1 else ''} behind." if count else "changes behind."
         if found.get("restore") or found.get("prefix"):
             text += " Original files it replaced are still in its backups."
+        linked = self.linked_folders()
+        if linked:
+            count = sum(linked.values())
+            text += (f" {count} {'are links' if count != 1 else 'is a link'} to AMDNR files in "
+                     f"{' and '.join(linked)}, probably a mod manager's folder; those files are removed too.")
         text += " Remove leftover AMDNR files lists every change before it starts."
         if found.get("steam_wrapper"):
             text += "\nSteam's launch options still start this game through the AMDNR wrapper."
@@ -533,14 +538,26 @@ class Window(QMainWindow):
             text += "\nThey cannot be removed yet:\n" + "\n".join(found["issues"])
         return text
 
+    def linked_folders(self):
+        """{folder: count} of the AMDNR files leftover links point to, by the folder mirroring the game's."""
+        found = self.inspection.get("leftovers") or {}
+        folders = {}
+        for name, target in (found.get("linked") or {}).items():
+            folder = str(Path(target).parents[len(PurePosixPath(name).parts) - 1])
+            folders[folder] = folders.get(folder, 0) + 1
+        return dict(sorted(folders.items()))
+
     def confirm_clean(self):
         found = self.inspection.get("leftovers") or {}
         groups = {}
         for name in found.get("remove") or ():
             top, _, rest = name.partition("/")
             groups.setdefault(top + "/" if rest else top, []).append(name)
-        items = [f"Remove {key} ({len(names)} files)" if key.endswith("/") else f"Remove {key}"
-                 for key, names in groups.items()]
+        # Files outside the game folder come first, so the list never cuts them off.
+        items = [f"Delete the {count} AMDNR file{'s' if count != 1 else ''} the links below point to, in {folder}"
+                 for folder, count in self.linked_folders().items()]
+        items += [f"Remove {key} ({len(names)} file{'s' if len(names) != 1 else ''})" if key.endswith("/")
+                  else f"Remove {key}" for key, names in groups.items()]
         items += [f"Remove the empty {name}/ folder" for name in found.get("folders") or ()]
         items += [f"Put back the original {name}" for name in found.get("restore") or ()]
         items += [f"Put back the original {item['path']}" for item in found.get("prefix") or ()]
