@@ -235,8 +235,9 @@ python3 linux/manage.py clean "/path/to/game/executable/directory"
 
 It prints every change and asks first (`--yes` skips the question). Originals in
 `.amdnr-linux-backup` and the Proton prefix go back; other mods and files it
-cannot show to be AMDNR's stay. Remove the wrapper from the launch options
-yourself.
+cannot show to be AMDNR's stay. AMDNR files a mod manager moved into its own
+folder and linked back are deleted there too ("Delete linked file"). Remove the
+wrapper from the launch options yourself.
 
 ## Troubleshooting
 

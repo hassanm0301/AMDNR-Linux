@@ -202,7 +202,8 @@ class GuiTests(unittest.TestCase):
         self.controller.leftovers = dict(
             remove=["OptiScaler.log", "amdnr-linux/launch.log", "amdnr-linux/run.sh"], restore=["d3d12.dll"],
             folders=["OptiScaler"], prefix=[], kept=[{"path": "dxgi.dll", "reason": "an OptiScaler build that does not name AMDNR"}],
-            issues=[], save_config=True, steam_wrapper=True)
+            issues=[], save_config=True, steam_wrapper=True,
+            linked={"OptiScaler.log": "/mods/overwrite/OptiScaler.log", "amdnr-linux/run.sh": "/mods/overwrite/amdnr-linux/run.sh"})
         self.window.select_game(self.window.library.currentItem())
         self.wait_idle()
         self.assertTrue(self.window.clean.isVisible())
@@ -212,6 +213,8 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(self.window.status.text(), "Leftover files found")
         self.assertIn("left 4 items behind. Original files it replaced are still in its backups.",
                       self.window.description.text())
+        self.assertIn("2 are links to AMDNR files in /mods/overwrite, probably a mod manager's folder; those files "
+                      "are removed too.", self.window.description.text())
         self.assertIn("Steam's launch options still start", self.window.description.text())
         with patch("native_launcher.app.steam.steam_is_running", return_value=False):
             with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.No) as ask:
@@ -219,6 +222,7 @@ class GuiTests(unittest.TestCase):
                 self.wait_idle()
             self.assertEqual(self.controller.operations, [])
             text = ask.call_args.args[2]
+            self.assertIn("?\n\n• Delete the 2 AMDNR files the links below point to, in /mods/overwrite\n", text)
             for line in ("• Remove OptiScaler.log", "• Remove amdnr-linux/ (2 files)", "• Remove the empty OptiScaler/ folder",
                          "• Put back the original d3d12.dll", "• Take the AMDNR wrapper out of Steam's launch options",
                          "• dxgi.dll: an OptiScaler build that does not name AMDNR", "OptiScaler.ini is first copied"):

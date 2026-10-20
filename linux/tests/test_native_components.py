@@ -323,6 +323,10 @@ class CompatibilityTests(unittest.TestCase):
         levels = [item["level"] for item in compatibility.notices(game)]
         self.assertEqual(levels, ["warning", "warning", "warning", "info"])
         self.assertEqual([item["level"] for item in compatibility.notices(game, managed=True)], ["warning", "info"])
+        # An earlier AMDNR installation's INI, which Remove leftover AMDNR files takes away.
+        leftover = compatibility.notices(game, leftovers=["OptiScaler.ini"])
+        self.assertEqual([item["level"] for item in leftover], ["warning", "warning", "info"])
+        self.assertFalse(any("Another OptiScaler" in item["text"] for item in leftover))
 
     def test_seeds_by_app_id_and_executable(self):
         self.assertEqual(compatibility.seeds(self.game("3240220")), {("Spoofing", "Dxgi"): "false"})

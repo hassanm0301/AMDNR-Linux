@@ -282,7 +282,8 @@ class Controller:
             # A wrapper left in Steam's launch options stops the game starting once its files are gone.
             result["leftovers"]["steam_wrapper"] = bool(game.appid) and steam.wrapper_leftover(
                 game, game.exe_dir / "amdnr-linux/run.sh", self.data_dir)
-        result["notices"] = (compatibility.notices(game, managed=result.get("installed", False))
+        result["notices"] = (compatibility.notices(game, managed=result.get("installed", False),
+                                                   leftovers=(result.get("leftovers") or {}).get("remove", ()))
                              + stores.notices(game, installed=result.get("installed", False)))
         result["component_choices"] = self.component_choices(game, result)
         return result

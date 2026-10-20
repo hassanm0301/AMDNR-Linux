@@ -402,6 +402,9 @@ class LauncherBackend:
             raise GameRunning(f"Close this game before changing its installation (processes: {processes}).")
 
     def _record(self, game):
+        if (game / self.manage.RECORD).is_symlink():
+            raise ConflictError("The installation record is a link, so this launcher cannot manage the installation. "
+                                "A mod manager may have moved AMDNR's files into its own folder.")
         path = self._safe(game, self.manage.RECORD)
         if not path.exists():
             return None
@@ -771,6 +774,8 @@ class LauncherBackend:
                         self.proxies.occupied(game, path.name)):
                     raise ConflictError(f"A new proxy target became occupied before installation: {path}")
                 entry = dict(path=str(path), before=before, after=operation["after"])
+                if "via" in operation:
+                    entry["via"] = str(operation["via"])
                 if before["kind"] == "file":
                     backup = directory / str(index)
                     shutil.copy2(path, backup)
@@ -829,7 +834,13 @@ class LauncherBackend:
             prefix = path.parts[-4:-1] == ("drive_c", "windows", "system32") and path.name in _PREFIX_FILES
             saved_config = path == self.state_dir / "configs" / (self._key(game) + ".ini")
             receipt = path == self.state_dir / "game-receipts" / (self._key(game) + ".json")
-            if not path.is_absolute() or not (in_game or prefix or saved_config or receipt) or any(parent.is_symlink() for parent in path.parents):
+            # A mod manager's file, removed with the link to it that the same journal puts back.
+            via = entry.get("via")
+            linked = isinstance(via, str) and game in Path(via).parents and any(
+                other["path"] == via and other["before"].get("kind") == "link"
+                and os.path.realpath(Path(via).parent / other["before"]["target"]) == str(path)
+                for other in journal["entries"])
+            if not path.is_absolute() or not (in_game or prefix or saved_config or receipt or linked) or any(parent.is_symlink() for parent in path.parents):
                 raise ConflictError(f"Unsafe recovery path: {path}")
             if _state(path) not in (entry["before"], entry["after"]):
                 raise ConflictError(f"A file changed after an interrupted operation; recovery stopped: {path}")
@@ -1193,13 +1204,16 @@ class LauncherBackend:
         cannot be shown to be (with the reason), and "issues" why cleaning cannot
         run. A file is listed only on evidence: this addon's own folders, or
         AMDNR named inside a host DLL, OptiScaler.ini or the host's logs.
+        "linked" maps listed paths that are a mod manager's links to the files
+        they point to (see _linked_target), which are removed with them.
         """
         game = self._game(game_dir)
-        plan = dict(remove=[], restore=[], folders=[], prefix=[], kept=[], issues=[], save_config=False)
+        plan = dict(remove=[], restore=[], folders=[], prefix=[], kept=[], issues=[], linked={}, save_config=False)
         try:
             self._scan_leftovers(game, plan)
         except (OSError, ValueError, ConflictError) as error:
             plan["issues"].append(str(error))
+            plan["linked"] = {}
         return plan
 
     def _scan_leftovers(self, game, plan):
@@ -1209,7 +1223,7 @@ class LauncherBackend:
                 plan["issues"].append("AMDNR is installed here. Use Uninstall and restore originals instead.")
                 return
         except ConflictError:
-            # An unreadable record is a leftover too, unless a newer launcher wrote it.
+            # An unreadable or linked record is a leftover too, unless a newer launcher wrote it.
             try:
                 version = json.loads((game / manage.RECORD).read_text()).get("version")
             except (OSError, ValueError, AttributeError):
@@ -1238,7 +1252,7 @@ class LauncherBackend:
                     if path.read_bytes() != _backup_marker:
                         raise ConflictError("The original-backup folder contains an unrecognized launcher marker.")
                 else:
-                    target = self._safe(game, original)
+                    target = self._leftover_path(game, original)
                     if target.exists() and not target.is_file():
                         raise ConflictError(f"Expected a file, found a directory: {target}")
                     plan["restore"].append(original)
@@ -1292,6 +1306,7 @@ class LauncherBackend:
                 candidates.append(name)
         if not (traces or amdnr):
             plan["kept"].clear()  # nothing here is AMDNR's, so nothing was held back either
+            plan["linked"] = {}
             return
         remove += candidates
         # Another OptiScaler build is this addon's only under a name it installs hosts as.
@@ -1331,18 +1346,67 @@ class LauncherBackend:
                 plan["folders"].append(folder)
         restored = set(plan["restore"])
         plan["remove"] = sorted(dict.fromkeys(name for name in remove if name not in restored))
+        # A linked file goes only where the link itself was listed on evidence. A restored
+        # original replaces the link, and the AMDNR file it pointed to goes with it.
+        plan["linked"] = {name: target for name, target in sorted(plan["linked"].items()) if name in remove}
         current = game / "OptiScaler.ini"
         plan["save_config"] = ("OptiScaler.ini" in plan["remove"] or "OptiScaler.ini" in restored) and (
-            current.is_file() and not current.is_symlink())
+            (current.is_file() and not current.is_symlink()) or "OptiScaler.ini" in plan["linked"])
 
     def _leftover_file(self, game, relative, plan, note=True):
-        """The regular file at relative, reached without links; a link is kept (and noted)."""
+        """The regular file at relative, reached without links in its folders.
+
+        A mod manager's link (see _linked_target) is read through: the file it
+        points to is returned and noted in plan["linked"]. Any other link is
+        kept (and noted).
+        """
         path = game.joinpath(*PurePosixPath(relative).parts)
-        if path.is_symlink() or any(parent.is_symlink() for parent in path.parents if game in parent.parents):
+        linked_folder = any(parent.is_symlink() for parent in path.parents if game in parent.parents)
+        target = self._linked_target(game, relative) if path.is_symlink() and not linked_folder else None
+        if target is not None:
+            plan["linked"][relative] = str(target)
+            return target
+        if path.is_symlink() or linked_folder:
             if note:
                 plan["kept"].append(dict(path=relative, reason="a link, left for whatever made it"))
             return None
         return path if path.is_file() else None
+
+    @staticmethod
+    def _linked_target(game, relative):
+        """The file a mod manager's link at relative stands for, or None.
+
+        Managers that deploy with links (Amethyst, Vortex) keep the real file in
+        their own folder under the same relative path, and an installation they
+        took over is moved there. Only a direct link to a regular file outside
+        the game folder whose path ends like the link's, in a folder this user
+        can change, is followed.
+        """
+        path = game.joinpath(*PurePosixPath(relative).parts)
+        try:
+            named = path.parent / path.readlink()
+            if named.is_symlink():
+                return None  # a chain of links
+            target = named.resolve(strict=True)
+        except (OSError, RuntimeError):
+            return None
+        parts = [part.casefold() for part in PurePosixPath(relative).parts]
+        if (not target.is_file() or target == game or game in target.parents or len(target.parts) <= len(parts)
+                or [part.casefold() for part in target.parts[-len(parts):]] != parts
+                or not os.access(target.parent, os.W_OK | os.X_OK)):
+            return None
+        return target
+
+    def _leftover_path(self, game, relative):
+        """The path of a listed leftover: it may be a link itself, but none of its folders may be."""
+        folder, _, name = relative.rpartition("/")
+        if name in ("", ".", "..") or "\\" in name:
+            raise ConflictError(f"Invalid managed path: {relative!r}")
+        return (self._safe(game, folder) if folder else game) / name
+
+    def _leftover_source(self, game, plan, relative):
+        """Where a listed file's bytes are: the file a mod manager's link points to, or the file itself."""
+        return Path(plan["linked"][relative]) if relative in plan["linked"] else self._safe(game, relative)
 
     def _tree(self, game, folder, plan):
         """Paths below a game folder, relative to the game; links are listed, never followed."""
@@ -1363,7 +1427,7 @@ class LauncherBackend:
         Unlike Uninstall, a prefix file someone else changed since stays as it
         is, and a deleted prefix is not created again.
         """
-        journal = game / "amdnr-linux/prefixes.json"
+        journal = self._leftover_file(game, "amdnr-linux/prefixes.json", plan, note=False) or game / "amdnr-linux/prefixes.json"
         if journal.is_symlink() or (journal.exists() and not journal.is_file()):
             raise ConflictError(f"The Proton prefix journal is not a regular file: {journal}")
         if not journal.exists():
@@ -1402,7 +1466,8 @@ class LauncherBackend:
                     plan["kept"].append(dict(path=str(path), reason="changed since AMDNR replaced it; left as it is"))
                     continue
                 if "backup" in item:
-                    backup = game / "amdnr-linux/prefix-backups" / item["backup"]
+                    relative = "amdnr-linux/prefix-backups/" + item["backup"]
+                    backup = self._leftover_file(game, relative, plan, note=False) or game / relative
                     if backup.is_symlink() or not backup.is_file() or _sha(backup) != entry["backup_sha256"]:
                         raise ValueError(f"missing or changed prefix backup: {backup}")
                 plan["prefix"].append(item)
@@ -1422,21 +1487,24 @@ class LauncherBackend:
             if plan["save_config"]:
                 # As with Uninstall, the last AMDNR settings stay in the state folder.
                 operations.append(self._operation(self._safe(self.state_dir, "configs/" + self._key(game) + ".ini"),
-                                                  source=self._safe(game, "OptiScaler.ini")))
+                                                  source=self._leftover_source(game, plan, "OptiScaler.ini")))
             # Originals go back before the backups holding them are removed.
             for item in plan["prefix"]:
                 path = Path(item["path"])
                 if "backup" in item:
-                    backup = self._safe(game, "amdnr-linux/prefix-backups/" + item["backup"])
+                    backup = self._leftover_source(game, plan, "amdnr-linux/prefix-backups/" + item["backup"])
                     operations.append(self._operation(path, source=backup))
                 elif "link" in item:
                     operations.append(self._operation(path, link=item["link"]))
                 else:
                     operations.append(self._operation(path))
             for relative in plan["restore"]:
-                operations.append(self._operation(self._safe(game, relative),
-                                                  source=self._safe(game, self.manage.BACKUP + "/" + relative)))
-            operations += [self._operation(self._safe(game, relative)) for relative in plan["remove"]]
+                operations.append(self._operation(self._leftover_path(game, relative),
+                                                  source=self._leftover_source(game, plan, self.manage.BACKUP + "/" + relative)))
+            operations += [self._operation(self._leftover_path(game, relative)) for relative in plan["remove"]]
+            for relative, target in plan["linked"].items():
+                # The file a mod manager's link stood for; recovery may put it back only beside that link.
+                operations.append(dict(self._operation(Path(target)), via=self._leftover_path(game, relative)))
             # The folder ends up as after an uninstall, an action every launcher version reads.
             operations.append(self._receipt_operation(game, "uninstall"))
             self.progress("Removing leftover AMDNR files…")
@@ -1446,7 +1514,19 @@ class LauncherBackend:
         return self.inspect(game)
 
     def _prune_leftovers(self, game, plan):
-        """Remove AMDNR's folders and those of removed files once nothing is left in them."""
+        """Remove AMDNR's folders and those of removed files once nothing is left in them.
+
+        In a mod manager's folder, only the folders below its copy of the game
+        folder that held removed files go.
+        """
+        linked = set()
+        for relative, target in plan["linked"].items():
+            linked.update(Path(target).parents[:len(PurePosixPath(relative).parts) - 1])
+        for path in sorted(linked, key=lambda item: len(item.parts), reverse=True):
+            try:
+                path.rmdir()
+            except OSError:
+                pass  # something else is still in it
         folders = {PurePosixPath(name) for name in plan["folders"]}
         for relative in plan["remove"]:
             folders.update(parent for parent in PurePosixPath(relative).parents if parent.parts)

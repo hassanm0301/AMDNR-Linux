@@ -334,7 +334,9 @@ def clean(game, assume_yes=False):
         raise ValueError(str(error)) from error
     for label, items in (("Remove", plan["remove"]), ("Remove empty folder", plan["folders"]),
                          ("Put back original", plan["restore"]),
-                         ("Put back original prefix file", [item["path"] for item in plan["prefix"]])):
+                         ("Put back original prefix file", [item["path"] for item in plan["prefix"]]),
+                         ("Delete linked file", [f"{target} (the link {name} points to it)"
+                                                 for name, target in plan["linked"].items()])):
         for item in items:
             print(f"{label}: {item}")
     for item in plan["kept"]:
