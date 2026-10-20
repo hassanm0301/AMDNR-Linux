@@ -281,9 +281,10 @@ in `dlssnr_on_amd.log`. With Model E, `OptiScaler.log` shows
 `AMDNR-SR-E/helixsr.log` shows `network running`; Save logs includes both.
 Look in `lmxxf_backend.log` beside the executable for `hip=1`, successful network
 initialization, and increasing **model** and **fresh composition** counts. The
-successful Stellar Blade run recorded 3,599 model frames and 3,594 fresh outputs,
-with temporal history and all 71 network blocks active. Rendering has a substantial
-GPU cost; the measured neural kernel took about 11–13 ms per frame.
+successful Stellar Blade run (AMDNR 0.3.5.5R4) recorded 3,599 model frames and
+3,594 fresh outputs, with temporal history and all 71 network blocks active.
+Rendering has a substantial GPU cost; the measured neural kernel took about
+11–13 ms per frame.
 
 The native launcher has fixture tests for discovery, all four file operations,
 Steam rollback, interrupted-operation recovery and GUI buttons. Packaging tests

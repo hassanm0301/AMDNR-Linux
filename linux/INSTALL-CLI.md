@@ -63,7 +63,7 @@ python3 linux/setup.py prepare --compiler "/path/to/your/game/d3dcompiler_47.dll
 ```
 
 This verifies the included binaries, downloads the checksum-pinned **AMDNR
-0.3.5.5R4** archive from its upstream GitHub release, and downloads **ROCm 7.2.4**
+0.3.5.6** archive from its upstream GitHub release, and downloads **ROCm 7.2.4**
 and its small dependencies directly from AMD and Ubuntu. It extracts a private
 runtime into the package; it does not install system packages, change drivers,
 or run package installation scripts. Upstream notices and licenses are retained.
@@ -78,7 +78,7 @@ If you already downloaded the exact upstream archive, you can use it:
 ```sh
 python3 linux/setup.py prepare \
   --compiler "/path/to/d3dcompiler_47.dll" \
-  --archive "/path/to/AMDNR-v0.3.5.5R4.zip"
+  --archive "/path/to/AMDNR-v0.3.5.6.zip"
 ```
 
 An existing output folder is never overwritten. Reuse the prepared package for
@@ -193,8 +193,8 @@ the neural effect. A menu banner alone does not prove inference is working.
 After loading a save, look in **`lmxxf_backend.log`** beside the game executable.
 It should report `hip=1`, your AMD GPU, successful network initialization, and
 increasing **model** and **fresh composition** counts. The successful Stellar
-Blade test recorded 3,599 model frames and 3,594 fresh composed outputs, with
-temporal history and all 71 network blocks active.
+Blade test (AMDNR 0.3.5.5R4) recorded 3,599 model frames and 3,594 fresh
+composed outputs, with temporal history and all 71 network blocks active.
 
 Move around, compare Home on/off, and check loading, menus, and image quality.
 Neural rendering has a substantial GPU cost: the tested kernel time was about
