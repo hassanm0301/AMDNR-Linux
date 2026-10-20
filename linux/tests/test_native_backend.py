@@ -30,6 +30,12 @@ def compiler_data(marker=b""):
     return bytes(data)
 
 
+def host_data(amdnr=True, version=b""):
+    """A DLL that reads like an OptiScaler host; AMDNR's names itself."""
+    return (compiler_data(version) + "OptiScaler.ini".encode("utf-16-le")
+            + ("AMDNR".encode("utf-16-le") if amdnr else b""))
+
+
 class BackendTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="native backend ")
@@ -727,6 +733,194 @@ class BackendTests(unittest.TestCase):
         with self.backend._lock(self.game):
             with self.assertRaisesRegex(RuntimeError, "already changing"):
                 self.backend.install(self.game, self.a)
+
+    def realistic(self, version):
+        """A package whose host, graphics DLLs and INI carry the markers of the real files."""
+        package = self.package(version)
+        (package / "winmm.dll").write_bytes(host_data(version=version.encode()))
+        for name in ("d3d12.dll", "d3d12core.dll"):
+            (package / name).write_bytes(compiler_data(b"vkd3d-proton " + version.encode()))
+        (package / "OptiScaler.ini").write_bytes(b"; AMDNR settings\n[DlssNr]\nEnabled=true\n")
+        (package / "OptiScaler/D3D12_OptiScaler").mkdir(parents=True)
+        (package / "OptiScaler/D3D12_OptiScaler/D3D12Core.dll").write_bytes(b"Agility SDK")
+        (package / "OptiScaler/libxess.dll").write_bytes(b"XeSS")
+        (package / "Licenses").mkdir()
+        (package / "Licenses/AMDNR_NOTICE.txt").write_bytes(b"AMDNR notice")
+        return package
+
+    def game_session(self):
+        """What the host and wrapper write while the game runs."""
+        logs = {"OptiScaler.log": b"[W] AMDNR session start, exe=\"Game.exe\"\n",
+                "OptiScaler.previous.Game.log": b"older session", "OptiScaler.previous-1.Game.log": b"oldest",
+                "optiscaler_running_Game.exe.marker": b"session header", "lmxxf_backend.log": b"hip=1",
+                "amd_bridge.log": b"bridge", "amdnr_crash.log": b"END", "AMDNR-crash-Game-20261020-101010.dmp": b"MDMP",
+                "AMDNR-report-Game-20261020.zip.tmp": b"unfinished", "lmxxf_vk_launch.pending": b""}
+        for name, data in logs.items():
+            (self.game / name).write_bytes(data)
+        (self.game / "amdnr-linux/launch.log").write_text("Wrapper prepared.\n")
+        # Finished reports belong to the player.
+        (self.game / "AMDNR-report-Game-20261019.zip").write_bytes(b"PK report")
+        return set(logs)
+
+    def test_leftovers_after_uninstall_are_listed_then_removed(self):
+        self.backend.install(self.game, self.realistic("C"))
+        written = self.game_session()
+        self.assertNotIn("leftovers", self.backend.inspect(self.game))
+        result = self.backend.uninstall(self.game)
+        self.assertFalse(result["installed"])
+        plan = result["leftovers"]
+        self.assertEqual(plan["issues"], [])
+        self.assertEqual(set(plan["remove"]), written | {"amdnr-linux/launch.log"})
+        self.assertEqual(plan["folders"], [])
+        before = snapshot(self.game)
+        self.assertEqual(self.backend.leftovers(self.game), plan)
+        self.assertEqual(snapshot(self.game), before)  # listing changes nothing
+        result = self.backend.clean(self.game)
+        self.assertEqual(snapshot(self.game), {**self.initial, "AMDNR-report-Game-20261019.zip": ("file", b"PK report")})
+        self.assertEqual(sorted(path.name for path in self.game.iterdir() if path.is_dir()), [])
+        self.assertEqual(result["leftovers"]["remove"], [])
+        self.assertEqual(self.backend.operation_receipt(self.game)["action"], "uninstall")
+        with self.assertRaisesRegex(ConflictError, "No leftover"):
+            self.backend.clean(self.game)
+
+    def test_lost_record_restores_originals_prefix_and_settings(self):
+        self.backend.install(self.game, self.realistic("C"))
+        prefix, compiler = self.prefix()
+        self.game_session()
+        (self.game / "OptiScaler.ini").write_bytes(b"; AMDNR settings the player changed\n")
+        (self.game / self.backend.manage.RECORD).unlink()
+        result = self.backend.inspect(self.game)
+        self.assertFalse(result["installed"])
+        self.assertIn("Original backups exist without an installation record.", result["conflicts"])
+        plan = result["leftovers"]
+        self.assertEqual(sorted(plan["restore"]), ["OptiScaler.ini", "d3d12.dll"])
+        self.assertEqual(sorted(Path(item["path"]).name for item in plan["prefix"]), ["amdhip64_7.dll", "d3dcompiler_47.dll"])
+        self.assertTrue(plan["save_config"])
+        for name in ("winmm.dll", "d3d12core.dll", "d3dcompiler_47.dll", "LmxxfNrRuntime.pak",
+                     "OptiScaler/libxess.dll", "OptiScaler/D3D12_OptiScaler/D3D12Core.dll", "Licenses/AMDNR_NOTICE.txt",
+                     "amdnr-linux/run.sh", "amdnr-linux/prefixes.json", ".amdnr-linux-backup/d3d12.dll"):
+            self.assertIn(name, plan["remove"])
+        with self.assertRaises(ConflictError):
+            self.backend.install(self.game, self.a)
+        self.backend.clean(self.game)
+        self.assertEqual(snapshot(self.game), {**self.initial, "AMDNR-report-Game-20261019.zip": ("file", b"PK report")})
+        self.assertEqual(compiler.read_bytes(), b"original prefix compiler")
+        self.assertFalse((compiler.parent / "amdhip64_7.dll").exists())
+        saved = Path(self.backend.diagnostics(self.game)["saved_settings"])
+        self.assertEqual(saved.read_bytes(), b"; AMDNR settings the player changed\n")
+        self.assertTrue(self.backend.install(self.game, self.a)["installed"])
+
+    def test_prefix_changed_or_deleted_since_is_left_alone(self):
+        self.backend.install(self.game, self.realistic("C"))
+        prefix, compiler = self.prefix()
+        compiler.write_bytes(b"Proton's newer compiler")
+        (self.game / self.backend.manage.RECORD).unlink()
+        plan = self.backend.leftovers(self.game)
+        self.assertEqual([Path(item["path"]).name for item in plan["prefix"]], ["amdhip64_7.dll"])
+        self.assertIn(str(compiler), [item["path"] for item in plan["kept"]])
+        self.backend.clean(self.game)
+        self.assertEqual(compiler.read_bytes(), b"Proton's newer compiler")
+        self.assertFalse((compiler.parent / "amdhip64_7.dll").exists())
+        # A deleted prefix is not created again.
+        self.backend.install(self.game, self.a)
+        self.backend.launch.prepare_prefix(self.game / "amdnr-linux", prefix)
+        (self.game / self.backend.manage.RECORD).unlink()
+        shutil.rmtree(prefix)
+        self.assertEqual(self.backend.leftovers(self.game)["prefix"], [])
+        self.backend.clean(self.game)
+        self.assertFalse(prefix.exists())
+        self.assertFalse((self.game / "amdnr-linux").exists())
+
+    def test_hand_copied_windows_install_is_found_by_amdnr_markers(self):
+        files = {"dxgi.dll": host_data(), "OptiScaler.ini": b"; AMDNR\n", "LmxxfNrRuntime.dll": b"lmxxf",
+                 "OptiScaler/amd_fidelityfx_upscaler_dx12.dll": b"FSR", "OptiScaler/amdnr_dlssg_fsr3.dll": b"FG",
+                 "OptiScaler/plugins/Other.asi": b"another plugin", "Licenses/AMDNR_NOTICE.txt": b"notice",
+                 "Licenses/XeSS_LICENSE.txt": b"XeSS", "Licenses/Game EULA.txt": b"game", "README.md": b"game readme",
+                 "d3dcompiler_47.dll": b"game compiler", "amd_fidelityfx_upscaler_dx12.dll": b"game FSR",
+                 "d3d12core.dll": compiler_data(b"vkd3d-proton")}
+        for name, data in files.items():
+            (self.game / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.game / name).write_bytes(data)
+        plan = self.backend.leftovers(self.game)
+        self.assertEqual(plan["remove"], sorted(["LmxxfNrRuntime.dll", "Licenses/AMDNR_NOTICE.txt", "Licenses/XeSS_LICENSE.txt",
+                                                 "OptiScaler.ini", "OptiScaler/amd_fidelityfx_upscaler_dx12.dll",
+                                                 "OptiScaler/amdnr_dlssg_fsr3.dll", "dxgi.dll"]))
+        self.assertEqual(plan["kept"], [{"path": "OptiScaler/plugins/Other.asi", "reason": "AMDNR does not install it"}])
+        self.assertTrue(plan["save_config"])
+        self.backend.clean(self.game)
+        for name in ("OptiScaler/plugins/Other.asi", "Licenses/Game EULA.txt", "README.md", "d3dcompiler_47.dll",
+                     "amd_fidelityfx_upscaler_dx12.dll", "d3d12core.dll", "save.dat", "d3d12.dll"):
+            self.assertTrue((self.game / name).is_file(), name)
+        self.assertFalse((self.game / "dxgi.dll").exists())
+
+    def test_other_optiscaler_builds_and_mod_files_are_left_alone(self):
+        files = {"dxgi.dll": host_data(amdnr=False), "OptiScaler.ini": b"[Upscalers]\n", "OptiScaler.log": b"OptiScaler v0.7",
+                 "OptiScaler/libxess.dll": b"XeSS", "dlssnr_amd_pass1.dll": b"standalone runtime"}
+        for name, data in files.items():
+            (self.game / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.game / name).write_bytes(data)
+        plan = self.backend.leftovers(self.game)
+        self.assertEqual((plan["remove"], plan["folders"], plan["kept"], plan["issues"]), ([], [], [], []))
+        self.assertEqual(self.backend.inspect(self.game)["status"], "not_installed")
+        # The addon was here, but it never installs a host as dxgi.dll.
+        (self.game / "amdnr-linux").mkdir()
+        (self.game / "amdnr-linux/launch.log").write_text("Launch setup failed\n")
+        plan = self.backend.leftovers(self.game)
+        self.assertEqual(plan["remove"], ["OptiScaler.log", "amdnr-linux/launch.log", "dlssnr_amd_pass1.dll"])
+        self.assertEqual([item["path"] for item in plan["kept"]], ["dxgi.dll", "OptiScaler/libxess.dll"])
+        self.backend.clean(self.game)
+        self.assertEqual({path.relative_to(self.game).as_posix() for path in self.game.rglob("*") if path.is_file()},
+                         {"dxgi.dll", "OptiScaler.ini", "OptiScaler/libxess.dll", "d3d12.dll", "save.dat"})
+
+    def test_cleaning_refuses_installs_newer_records_links_and_foreign_backups(self):
+        self.backend.install(self.game, self.a)
+        self.assertNotIn("leftovers", self.backend.inspect(self.game))
+        with self.assertRaisesRegex(ConflictError, "Use Uninstall"):
+            self.backend.clean(self.game)
+        self.backend.uninstall(self.game)
+        record = self.game / self.backend.manage.RECORD
+        record.write_text(json.dumps({"version": 2, "files": []}))
+        self.assertIn("newer", self.backend.leftovers(self.game)["issues"][0])
+        record.write_text("{not json")
+        plan = self.backend.leftovers(self.game)
+        self.assertEqual((plan["remove"], plan["issues"]), ([self.backend.manage.RECORD], []))
+        outside = self.root / "outside.log"
+        outside.write_bytes(b"AMDNR log owned by another tool")
+        (self.game / "OptiScaler.log").symlink_to(outside)
+        plan = self.backend.leftovers(self.game)
+        self.assertIn({"path": "OptiScaler.log", "reason": "a link, left for whatever made it"}, plan["kept"])
+        self.backend.clean(self.game)
+        self.assertTrue((self.game / "OptiScaler.log").is_symlink())
+        self.assertEqual(outside.read_bytes(), b"AMDNR log owned by another tool")
+        backup = self.game / self.backend.manage.BACKUP
+        backup.mkdir()
+        (backup / ".launcher-backup-v1").write_bytes(b"someone else's marker\n")
+        with self.assertRaisesRegex(ConflictError, "unrecognized launcher marker"):
+            self.backend.clean(self.game)
+        self.assertTrue((backup / ".launcher-backup-v1").exists())
+
+    def test_failed_clean_rolls_back_every_file(self):
+        self.backend.install(self.game, self.realistic("C"))
+        prefix, compiler = self.prefix()
+        self.game_session()
+        (self.game / self.backend.manage.RECORD).unlink()
+        game_before, prefix_before = snapshot(self.game), snapshot(prefix)
+        apply, calls = self.backend._apply, 0
+
+        def fail(operation):
+            nonlocal calls
+            apply(operation)
+            calls += 1
+            if calls == 6:
+                raise OSError("disk removed")
+
+        with patch.object(self.backend, "_apply", side_effect=fail):
+            with self.assertRaisesRegex(OSError, "disk removed"):
+                self.backend.clean(self.game)
+        self.assertEqual(snapshot(self.game), game_before)
+        self.assertEqual(snapshot(prefix), prefix_before)
+        self.backend.clean(self.game)
+        self.assertEqual(compiler.read_bytes(), b"original prefix compiler")
 
     def test_progress_callback_failure_does_not_invalidate_commit(self):
         other = LauncherBackend(self.release, self.root / "cache2", self.root / "state2",

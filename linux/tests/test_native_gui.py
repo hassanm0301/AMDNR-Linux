@@ -41,6 +41,7 @@ class FakeController:
         self.proxy_history = []
         self.proxy_requests = []
         self.occupied_proxies = set()
+        self.leftovers = None
 
     def discover(self):
         return self.games
@@ -49,16 +50,23 @@ class FakeController:
         from proxies import SUPPORTED
         options = [{"name": name, "available": name not in self.occupied_proxies,
                     "current": self.installed and name == self.proxy} for name in SUPPORTED]
-        return dict(installed=self.installed, modified=self.modified, missing=self.missing, conflicts=self.conflicts,
-                    health_issues=self.health_issues, runtime_status="unverified",
-                    proxy_switch_supported=self.installed, proxy_switch_issue=None,
-                    proxy_name=self.proxy if self.installed else None, proxy_history=list(self.proxy_history),
-                    proxy_options=options, proxy_next=next((name for name in SUPPORTED
-                        if name not in self.proxy_history and name not in self.occupied_proxies), None))
+        result = dict(installed=self.installed, modified=self.modified, missing=self.missing, conflicts=self.conflicts,
+                      health_issues=self.health_issues, runtime_status="unverified",
+                      proxy_switch_supported=self.installed, proxy_switch_issue=None,
+                      proxy_name=self.proxy if self.installed else None, proxy_history=list(self.proxy_history),
+                      proxy_options=options, proxy_next=next((name for name in SUPPORTED
+                          if name not in self.proxy_history and name not in self.occupied_proxies), None))
+        if not self.installed:
+            result["leftovers"] = dict(self.leftovers or dict(remove=[], restore=[], folders=[], prefix=[], kept=[],
+                                                              issues=[], save_config=False, steam_wrapper=False))
+        return result
 
     def operate(self, action, game, proxy=None):
         self.operations.append((action, game.appid))
         self.proxy_requests.append(proxy)
+        if action == "clean":
+            self.leftovers = None
+            return {"message": "Leftover AMDNR files removed."}
         if action == "switch_proxy" and proxy == "next":
             proxy = self.inspect(game)["proxy_next"]
         if proxy and proxy != "auto":
@@ -187,6 +195,49 @@ class GuiTests(unittest.TestCase):
                 self.wait_idle()
         self.assertEqual([action for action, _ in self.controller.operations], ["install", "repair", "update", "uninstall"])
         self.assertTrue(self.window.install.isEnabled())
+
+    def test_leftovers_replace_uninstall_and_are_confirmed_first(self):
+        self.assertFalse(self.window.clean.isVisible())
+        self.assertTrue(self.window.uninstall.isVisible())
+        self.controller.leftovers = dict(
+            remove=["OptiScaler.log", "amdnr-linux/launch.log", "amdnr-linux/run.sh"], restore=["d3d12.dll"],
+            folders=["OptiScaler"], prefix=[], kept=[{"path": "dxgi.dll", "reason": "an OptiScaler build that does not name AMDNR"}],
+            issues=[], save_config=True, steam_wrapper=True)
+        self.window.select_game(self.window.library.currentItem())
+        self.wait_idle()
+        self.assertTrue(self.window.clean.isVisible())
+        self.assertTrue(self.window.clean.isEnabled())
+        self.assertFalse(self.window.uninstall.isVisible())
+        self.assertTrue(self.window.install.isEnabled())
+        self.assertEqual(self.window.status.text(), "Leftover files found")
+        self.assertIn("left 4 items behind. Original files it replaced are still in its backups.",
+                      self.window.description.text())
+        self.assertIn("Steam's launch options still start", self.window.description.text())
+        with patch("native_launcher.app.steam.steam_is_running", return_value=False):
+            with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.No) as ask:
+                QTest.mouseClick(self.window.clean, Qt.MouseButton.LeftButton)
+                self.wait_idle()
+            self.assertEqual(self.controller.operations, [])
+            text = ask.call_args.args[2]
+            for line in ("• Remove OptiScaler.log", "• Remove amdnr-linux/ (2 files)", "• Remove the empty OptiScaler/ folder",
+                         "• Put back the original d3d12.dll", "• Take the AMDNR wrapper out of Steam's launch options",
+                         "• dxgi.dll: an OptiScaler build that does not name AMDNR", "OptiScaler.ini is first copied"):
+                self.assertIn(line, text)
+            with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+                QTest.mouseClick(self.window.clean, Qt.MouseButton.LeftButton)
+                self.wait_idle()
+        self.assertEqual(self.controller.operations, [("clean", "12")])
+        self.assertFalse(self.window.clean.isVisible())
+        self.assertTrue(self.window.uninstall.isVisible())
+        self.assertEqual(self.window.status.text(), "Ready to install")
+        self.controller.leftovers = dict(remove=["OptiScaler.log"], restore=[], folders=[], prefix=[], kept=[],
+                                         issues=["Symlink in installation path: OptiScaler"], save_config=False,
+                                         steam_wrapper=False)
+        self.window.select_game(self.window.library.currentItem())
+        self.wait_idle()
+        self.assertTrue(self.window.clean.isVisible())
+        self.assertFalse(self.window.clean.isEnabled())
+        self.assertIn("cannot be removed yet:\nSymlink in installation path", self.window.description.text())
 
     def test_steam_running_prevents_operation(self):
         with patch("native_launcher.app.steam.steam_is_running", return_value=True), patch.object(QMessageBox, "information") as notice:

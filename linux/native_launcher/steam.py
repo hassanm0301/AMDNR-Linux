@@ -415,7 +415,7 @@ def _account_path(game, account):
     return path
 
 
-def _accounts(game):
+def _accounts(game, required=True):
     entries = []
     for account in sorted((Path(_identity(game)) / 'userdata').glob('*')):
         if not account.name.isdecimal():
@@ -427,7 +427,7 @@ def _accounts(game):
         text = _decode(data)
         if _app(text, game.appid) is not None:
             entries.append((account.name, path, data))
-    if not entries:
+    if not entries and required:
         raise ValueError('Launch this game once in Steam, then close Steam and try again.')
     return entries
 
@@ -648,6 +648,70 @@ def restore_launch(game: SteamGame, state_dir: Path):
     with _lock(game, state_dir) as path:
         _no_pending_receipt(path)
         _restore(game, path)
+
+
+def wrapper_leftover(game: SteamGame, wrapper: Path, state_dir: Path) -> bool:
+    """Whether Steam still names this wrapper for the game, in its options or our journal. Read-only."""
+    wrapper = str(Path(wrapper).expanduser().resolve())
+    try:
+        journal, _ = _journal(journal_path(game, state_dir), game)
+        if journal is not None:
+            return journal['wrapper'] == wrapper
+        for _, _, data in _accounts(game, required=False):
+            _, option = _options(_decode(data), game.appid)
+            if option and wrapper in option.value.value:
+                return True
+    except (OSError, ValueError):
+        pass
+    return False
+
+
+def remove_wrapper(game: SteamGame, wrapper: Path, state_dir: Path) -> bool:
+    """Take a leftover wrapper out of the game's launch options; True if Steam's settings changed.
+
+    Options this launcher recorded go back to what they were. Otherwise, as for a
+    wrapper added by hand, only the wrapper in front of %command% is removed.
+    """
+    wrapper = str(Path(wrapper).expanduser().resolve())
+    with _lock(game, state_dir) as path:
+        _no_pending_receipt(path)
+        _closed()
+        journal, _ = _journal(path, game)
+        if journal is not None:
+            if journal['wrapper'] != wrapper:
+                return False  # another folder's installation owns these options
+            try:
+                _restore(game, path)
+                return True
+            except ValueError:
+                pass  # edited since: keep those edits and take out only the wrapper
+        changed = False
+        for _, config, data in _accounts(game, required=False):
+            text = _decode(data)
+            _, option = _options(text, game.appid)
+            current = option.value.value if option else None
+            if not current or wrapper not in current:
+                continue
+            try:
+                _, without, adopted = _with_wrapper(current, wrapper)
+            except ValueError:
+                adopted = False
+            if not adopted:
+                raise ValueError('Steam launch options use the AMDNR wrapper in a way that cannot be edited safely. '
+                                 'Remove it from the game’s launch options in Steam.')
+            restored, _ = _replace_options(text, game.appid, None if without.strip() == '%command%' else without)
+            _atomic_write(config, _encode(restored), data, steam_file=True)
+            changed = True
+        if journal is not None:
+            path.unlink()
+            backups = path.parent / (game.appid + '-backups')
+            for entry in journal['entries']:
+                (backups / (entry['account'] + '.vdf')).unlink(missing_ok=True)
+            try:
+                backups.rmdir()
+            except OSError:
+                pass
+        return changed
 
 
 def _snapshot(game, path):

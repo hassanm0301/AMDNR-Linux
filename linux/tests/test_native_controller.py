@@ -225,6 +225,42 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(self.config.read_bytes(), self.config_before)
         self.assertEqual(backend_fixture.snapshot(self.game_dir), self.fixture.initial)
 
+    def test_clean_after_lost_record_restores_files_and_launch_options(self):
+        self.package = self.fixture.realistic("C")  # files are recognised by their contents
+        self.app.operate("install", self.game)
+        (self.game_dir / "OptiScaler.log").write_bytes(b"AMDNR session start\n")
+        (self.game_dir / self.app.backend.manage.RECORD).unlink()
+        result = self.app.inspect(self.game)
+        self.assertFalse(result["installed"])
+        self.assertTrue(result["leftovers"]["steam_wrapper"])
+        self.assertIn("OptiScaler.log", result["leftovers"]["remove"])
+        message = self.app.operate("clean", self.game)["message"]
+        self.assertIn("Original game files were put back", message)
+        self.assertIn("Steam's launch options no longer", message)
+        self.assertEqual(self.config.read_bytes(), self.config_before)
+        self.assertEqual(backend_fixture.snapshot(self.game_dir), self.fixture.initial)
+        result = self.app.inspect(self.game)
+        self.assertEqual((result["leftovers"]["remove"], result["leftovers"]["steam_wrapper"]), ([], False))
+        with self.assertRaisesRegex(ValueError, "No leftover"):
+            self.app.operate("clean", self.game)
+        # A wrapper added by hand is found even with nothing left in the folder.
+        wrapper = steam.shlex.quote(str(self.game_dir / "amdnr-linux/run.sh"))
+        self.config.write_bytes(steam_fixture.config(f"MANGOHUD=1 gamemoderun {wrapper} %command% --original"))
+        self.assertTrue(self.app.inspect(self.game)["leftovers"]["steam_wrapper"])
+        self.assertIn("No AMDNR files were left", self.app.operate("clean", self.game)["message"])
+        self.assertEqual(self.config.read_bytes(), self.config_before)
+
+    def test_clean_stops_before_files_when_steam_options_cannot_change(self):
+        self.app.operate("install", self.game)
+        (self.game_dir / self.app.backend.manage.RECORD).unlink()
+        before = backend_fixture.snapshot(self.game_dir)
+        with patch.object(steam, "remove_wrapper", side_effect=ValueError("Steam settings changed")), \
+                patch.object(self.app.backend, "clean") as clean:
+            with self.assertRaisesRegex(ValueError, "Steam settings changed"):
+                self.app.operate("clean", self.game)
+        clean.assert_not_called()
+        self.assertEqual(backend_fixture.snapshot(self.game_dir), before)
+
     def test_steam_error_prevents_backend_mutation(self):
         self.config.write_bytes(steam_fixture.config("%command% %command%"))
         before = self.config.read_bytes()

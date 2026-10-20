@@ -273,6 +273,10 @@ class Controller:
 
     def inspect(self, game):
         result = self.backend.inspect(game.exe_dir, executable=self.executable(game))
+        if result.get("leftovers") is not None:
+            # A wrapper left in Steam's launch options stops the game starting once its files are gone.
+            result["leftovers"]["steam_wrapper"] = bool(game.appid) and steam.wrapper_leftover(
+                game, game.exe_dir / "amdnr-linux/run.sh", self.data_dir)
         result["notices"] = (compatibility.notices(game, managed=result.get("installed", False))
                              + stores.notices(game, installed=result.get("installed", False)))
         result["component_choices"] = self.component_choices(game, result)
@@ -491,7 +495,7 @@ class Controller:
             return self._operate(action, game, proxy)
 
     def _operate(self, action, game, proxy=None):
-        if action not in {"install", "repair", "update", "uninstall", "switch_proxy"}:
+        if action not in {"install", "repair", "update", "uninstall", "switch_proxy", "clean"}:
             raise ValueError("Unknown installation action.")
         if getattr(game, "library_ambiguous", False):
             raise ValueError("Steam lists this game in more than one library. Resolve the duplicate in Steam, then rescan.")
@@ -506,6 +510,8 @@ class Controller:
             if stores.store_name(game):
                 return {"message": stores.removed_message(game)}
             return {"message": "Removed. Original game files and Steam launch options restored."}
+        if action == "clean":
+            return self._clean(game)
         if action == "switch_proxy":
             self.report("Changing the game's loading DLL…")
             self.mutate(self.backend, action, game, proxy=proxy)
@@ -560,6 +566,36 @@ class Controller:
             return {"message": 'Installed. Add the launch option shown below to your game runner.',
                     "launch_options": shlex.quote(str(directory / "amdnr-linux/run.sh")) + " %command%"}
         return {"message": "Installed. Open Steam and launch your game normally. Enable DLSS, FSR or XeSS in the game; Insert opens OptiScaler and Home toggles neural rendering."}
+
+    def _clean(self, game):
+        """Remove what an installation this launcher no longer recognises left behind."""
+        directory = game.exe_dir
+        wrapper = directory / "amdnr-linux/run.sh"
+        self.report("Looking for leftover AMDNR files…")
+        plan = self.backend.leftovers(directory)
+        if plan["issues"]:
+            raise ValueError("\n".join(plan["issues"]))
+        files = any(plan[key] for key in ("remove", "restore", "folders", "prefix"))
+        options = bool(game.appid) and steam.wrapper_leftover(game, wrapper, self.data_dir)
+        if not files and not options:
+            raise ValueError("No leftover AMDNR files were found for this game.")
+        # Steam first: a failure there leaves every file in place, and both steps can be repeated.
+        if options:
+            self.report("Taking the AMDNR wrapper out of Steam's launch options…")
+            steam.remove_wrapper(game, wrapper, self.data_dir)
+        if files:
+            self.backend.clean(directory)
+        message = "Leftover AMDNR files removed." if files else "No AMDNR files were left in the game folder."
+        if plan["restore"]:
+            message += " Original game files were put back."
+        if options:
+            message += " Steam's launch options no longer start the game through the AMDNR wrapper."
+        if stores.store_name(game):
+            message += (f" Remove the AMDNR wrapper from {stores.PLACES[game.store]} in {stores.store_name(game)}, "
+                        "or the game will not start." if stores.wrapper_state(game) else "")
+        elif not game.appid:
+            message += " If a launch option still runs amdnr-linux/run.sh, remove it, or the game will not start."
+        return {"message": message}
 
     def check_updates(self):
         self.new_release = available_release()

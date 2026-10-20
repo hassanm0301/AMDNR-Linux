@@ -47,6 +47,34 @@ _missing = object()
 _backup_marker = b"NR Linux Manager original backups\n"
 _proxy_config = "amdnr-linux/proxy.json"
 
+# Leftovers: what an installation leaves once no trusted record describes it.
+# Names follow what staging places and what the GPL host writes while a game
+# runs (Logger.cpp, CrashReport.cpp, AmdnrReport.cpp, LmxxfBackend.cpp).
+# Finished "Save report" zips belong to the player and are never listed.
+_AMDNR_OUTPUTS = re.compile(r"amdnr_crash\.log|amdnr-crash-trace\.log|AMDNR-crash-[^/]+\.dmp|AMDNR-report-[^/]+\.zip\.tmp")
+# Any OptiScaler build writes these; AMDNR's own copies name it in their header.
+_OPTISCALER_OUTPUTS = re.compile(r"OptiScaler\.log|OptiScaler\.previous(?:-\d+)?(?:\.[^/]+)?\.log|optiscaler_running_[^/]+\.marker")
+# AMDNR's runtimes, logs and danielblnc's files, removed only beside other evidence.
+_RUNTIME_FILES = ("LmxxfNrRuntime.dll", "LmxxfNrRuntime.pak", "lmxxf_backend.log", "lmxxf_vk_launch.pending",
+                  "amd_bridge.log", "amd_presr.log", "dlssnr_on_amd.log", "dlssnr_amd_pass1.dll", "dlssnr_amd_pass2.dll",
+                  "dlssnr_amd_pass3.dll", "dlssnr_on_amd_weights.bin", "danielblnc_ATTRIBUTION.txt", "danielblnc_LICENSE.txt")
+# Names an OptiScaler host may use: this addon's proxies and those of a hand-copied Windows install.
+_HOST_NAMES = ("winmm.dll", "version.dll", "dbghelp.dll", "wininet.dll", "winhttp.dll", "dxgi.dll", "d3d11.dll",
+               "d3d12.dll", "dinput8.dll", "optiscaler.dll", "optiscaler.asi")
+_GRAPHICS_NAMES = ("d3d12.dll", "d3d12core.dll")
+_OPTISCALER_INI = "OptiScaler.ini".encode("utf-16-le")
+_AMDNR_NAME = "AMDNR".encode("utf-16-le")
+_VKD3D = b"vkd3d-proton"
+# Library files AMDNR and the pre-SR host keep in OptiScaler/, and OptiPatcher.
+_OPTISCALER_LIBRARIES = re.compile(r"OptiScaler/(?:(?:amd_fidelityfx_[^/]+|libxe(?:ss|ll)[^/]*|amdnr_[^/]+)\.dll"
+                                   r"|D3D12_OptiScaler/D3D12Core\.dll|plugins/OptiPatcher\.asi)", re.IGNORECASE)
+_AMDNR_NOTICES = ("AMDNR_NOTICE.txt", "AMDNR_RDNA3_BACKEND.txt", "NOTICE-AMDNR-RDNA3.txt", "RenoDX_ATTRIBUTION.txt",
+                  "lmxxf_LICENSE.txt", "danielblnc_ATTRIBUTION.txt", "dlssg-to-fsr3_ATTRIBUTION.txt")
+# Also shipped by games; removed only from a Licenses folder that holds AMDNR's notice.
+_SHARED_NOTICES = ("DirectX_LICENSE.txt", "FidelityFX_v2_LICENSE.md", "XeSS_LICENSE.txt")
+# Folders only AMDNR or this addon create; removed once nothing else is left in them.
+_LEFTOVER_FOLDERS = ("amdnr-linux", "AMDNR-SR-E", "OptiScaler", "experimental_lighting")
+
 
 def _sha(path):
     with Path(path).open("rb") as source:
@@ -213,6 +241,24 @@ def _state(path):
     if path.exists():
         raise ConflictError(f"Expected a file, found a directory: {path}")
     return {"kind": "missing"}
+
+
+def _contains(path, needles, limit=256 * 1024**2):
+    """The needles found in the first `limit` bytes of a regular file; never follows a link."""
+    found = set()
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    with os.fdopen(descriptor, "rb") as source:
+        if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+            return found
+        overlap, tail, read = max(map(len, needles)) - 1, b"", 0
+        while read < limit and (chunk := source.read(min(1024 * 1024, limit - read))):
+            read += len(chunk)
+            window = tail + chunk
+            found.update(needle for needle in needles if needle in window)
+            if len(found) == len(needles):
+                break
+            tail = window[-overlap:] if overlap else b""
+    return found
 
 
 class LauncherBackend:
@@ -492,6 +538,8 @@ class LauncherBackend:
                         pass  # Exhaustion still permits an explicit manual retry.
         except (ValueError, OSError, ConflictError) as error:
             result["conflicts"].append(str(error))
+        if not result["installed"]:
+            result["leftovers"] = self.leftovers(game)
         if result["conflicts"]:
             result["status"] = "conflict"
         if result["recovery_needed"]:
@@ -1123,6 +1171,287 @@ class LauncherBackend:
                     root.rmdir()
                 except OSError:
                     pass
+
+    def leftovers(self, game_dir):
+        """List what an installation this launcher no longer recognises left in a game folder.
+
+        Read-only. "remove" and "restore" are paths relative to the game folder;
+        a restored file gets back the original kept in the backup folder.
+        "folders" are AMDNR's folders with nothing left in them, "prefix" the
+        Proton prefix files the wrapper replaced, "kept" what may be AMDNR's but
+        cannot be shown to be (with the reason), and "issues" why cleaning cannot
+        run. A file is listed only on evidence: this addon's own folders, or
+        AMDNR named inside a host DLL, OptiScaler.ini or the host's logs.
+        """
+        game = self._game(game_dir)
+        plan = dict(remove=[], restore=[], folders=[], prefix=[], kept=[], issues=[], save_config=False)
+        try:
+            self._scan_leftovers(game, plan)
+        except (OSError, ValueError, ConflictError) as error:
+            plan["issues"].append(str(error))
+        return plan
+
+    def _scan_leftovers(self, game, plan):
+        manage = self.manage
+        try:
+            if self._record(game):
+                plan["issues"].append("AMDNR is installed here. Use Uninstall and restore originals instead.")
+                return
+        except ConflictError:
+            # An unreadable record is a leftover too, unless a newer launcher wrote it.
+            try:
+                version = json.loads((game / manage.RECORD).read_text()).get("version")
+            except (OSError, ValueError, AttributeError):
+                version = None
+            if isinstance(version, int) and version > 1:
+                plan["issues"].append("A newer AMDNR Linux Manager installed AMDNR here. Use it to uninstall.")
+                return
+        remove, candidates, graphics, hosts = [], [], [], {}
+        traces = amdnr = False
+        ini = compiler = None
+        for name in (manage.RECORD, manage.RECORD + ".tmp"):
+            if self._leftover_file(game, name, plan):
+                remove.append(name)
+                traces = True
+        backup = game / manage.BACKUP
+        if backup.is_symlink():
+            raise ConflictError(f"The original-backup folder is a link: {backup}")
+        if backup.is_dir():
+            traces = True
+            for relative in self._tree(game, manage.BACKUP, plan):
+                path = self._leftover_file(game, relative, plan)
+                if path is None:
+                    continue
+                original = relative[len(manage.BACKUP) + 1:]
+                if original == ".launcher-backup-v1":
+                    if path.read_bytes() != _backup_marker:
+                        raise ConflictError("The original-backup folder contains an unrecognized launcher marker.")
+                else:
+                    target = self._safe(game, original)
+                    if target.exists() and not target.is_file():
+                        raise ConflictError(f"Expected a file, found a directory: {target}")
+                    plan["restore"].append(original)
+                remove.append(relative)
+        bundle = game / "amdnr-linux"
+        if bundle.is_symlink():
+            raise ConflictError(f"The amdnr-linux folder is a link: {bundle}")
+        if bundle.is_dir():
+            traces = True
+            self._leftover_prefix(game, plan)
+            remove += [relative for relative in self._tree(game, "amdnr-linux", plan)
+                       if self._leftover_file(game, relative, plan)]
+        for relative in self._tree(game, "AMDNR-SR-E", plan):
+            if self._leftover_file(game, relative, plan):
+                remove.append(relative)
+                amdnr = True
+        with os.scandir(game) as listing:
+            names = sorted(entry.name for entry in listing)
+        for name in names:
+            folded = name.casefold()
+            if not (folded in _HOST_NAMES or folded in _GRAPHICS_NAMES or name in _RUNTIME_FILES
+                    or name in ("OptiScaler.ini", "d3dcompiler_47.dll") or name.startswith(".amdnr-write-")
+                    or _AMDNR_OUTPUTS.fullmatch(name) or _OPTISCALER_OUTPUTS.fullmatch(name)):
+                continue
+            dll = folded in _HOST_NAMES or folded in _GRAPHICS_NAMES
+            # A linked DLL cannot be read safely, and its name alone does not make it AMDNR's.
+            path = self._leftover_file(game, name, plan, note=not dll)
+            if path is None:
+                continue
+            if dll:
+                found = _contains(path, (_OPTISCALER_INI, _AMDNR_NAME, _VKD3D))
+                if _OPTISCALER_INI in found:
+                    hosts[name] = _AMDNR_NAME in found
+                    amdnr |= hosts[name]
+                elif _VKD3D in found and folded in _GRAPHICS_NAMES:
+                    graphics.append(name)
+            elif name == "OptiScaler.ini":
+                ini = b"AMDNR" in _contains(path, (b"AMDNR",), 4 * 1024**2)
+                amdnr |= ini
+            elif name == "d3dcompiler_47.dll":
+                compiler = name
+            elif name.startswith(".amdnr-write-"):
+                remove.append(name)  # an interrupted write of this launcher
+                traces = True
+            elif _AMDNR_OUTPUTS.fullmatch(name):
+                remove.append(name)
+                amdnr = True
+            else:
+                if _OPTISCALER_OUTPUTS.fullmatch(name):
+                    amdnr |= b"AMDNR" in _contains(path, (b"AMDNR",), 64 * 1024)
+                candidates.append(name)
+        if not (traces or amdnr):
+            plan["kept"].clear()  # nothing here is AMDNR's, so nothing was held back either
+            return
+        remove += candidates
+        # Another OptiScaler build is this addon's only under a name it installs hosts as.
+        foreign = [name for name, ours in hosts.items() if not (ours or (traces and name in self.proxies.SUPPORTED))]
+        remove += [name for name in hosts if name not in foreign]
+        plan["kept"] += [dict(path=name, reason="an OptiScaler build that does not name AMDNR") for name in foreign]
+        if ini is not None and (ini or len(foreign) < len(hosts)):
+            remove.append("OptiScaler.ini")
+        if traces:
+            remove += graphics
+            if compiler and compiler not in plan["restore"]:
+                if backup.is_dir():
+                    remove.append(compiler)  # originals are backed up, so the installation added it
+                else:
+                    plan["kept"].append(dict(path=compiler, reason="it may be the game's own shader compiler"))
+        for relative in self._tree(game, "OptiScaler", plan):
+            if self._leftover_file(game, relative, plan):
+                if PurePosixPath(relative).name.startswith(".amdnr-write-") or (
+                        _OPTISCALER_LIBRARIES.fullmatch(relative) and not foreign):
+                    remove.append(relative)
+                else:
+                    plan["kept"].append(dict(path=relative, reason="AMDNR does not install it" if not foreign
+                                             else "the OptiScaler build that stays uses it"))
+        notices = [relative for relative in self._tree(game, "Licenses", plan) if relative.count("/") == 1]
+        shared = "Licenses/AMDNR_NOTICE.txt" in notices
+        remove += [relative for relative in notices
+                   if (relative[9:] in _AMDNR_NOTICES or (shared and relative[9:] in _SHARED_NOTICES))
+                   and self._leftover_file(game, relative, plan)]
+        if traces:
+            # The pre-SR host's own folder; only this addon installs it.
+            remove += [relative for relative in self._tree(game, "experimental_lighting", plan)
+                       if self._leftover_file(game, relative, plan)]
+        for folder in (manage.BACKUP, *_LEFTOVER_FOLDERS):
+            path = game / folder
+            if ((traces or folder != "experimental_lighting") and path.is_dir() and not path.is_symlink()
+                    and not self._tree(game, folder, plan)):
+                plan["folders"].append(folder)
+        restored = set(plan["restore"])
+        plan["remove"] = sorted(dict.fromkeys(name for name in remove if name not in restored))
+        current = game / "OptiScaler.ini"
+        plan["save_config"] = ("OptiScaler.ini" in plan["remove"] or "OptiScaler.ini" in restored) and (
+            current.is_file() and not current.is_symlink())
+
+    def _leftover_file(self, game, relative, plan, note=True):
+        """The regular file at relative, reached without links; a link is kept (and noted)."""
+        path = game.joinpath(*PurePosixPath(relative).parts)
+        if path.is_symlink() or any(parent.is_symlink() for parent in path.parents if game in parent.parents):
+            if note:
+                plan["kept"].append(dict(path=relative, reason="a link, left for whatever made it"))
+            return None
+        return path if path.is_file() else None
+
+    def _tree(self, game, folder, plan):
+        """Paths below a game folder, relative to the game; links are listed, never followed."""
+        root = game / folder
+        if root.is_symlink():
+            plan["kept"].append(dict(path=folder, reason="a link, left for whatever made it"))
+            return []
+        found = []
+        for directory, children, files in os.walk(root, followlinks=False):
+            base = Path(directory)
+            found += [(base / name).relative_to(game).as_posix()
+                      for name in sorted(files) + sorted(name for name in children if (base / name).is_symlink())]
+        return found
+
+    def _leftover_prefix(self, game, plan):
+        """Plan giving back the Proton prefix files a lost installation's wrapper replaced.
+
+        Unlike Uninstall, a prefix file someone else changed since stays as it
+        is, and a deleted prefix is not created again.
+        """
+        journal = game / "amdnr-linux/prefixes.json"
+        if journal.is_symlink() or (journal.exists() and not journal.is_file()):
+            raise ConflictError(f"The Proton prefix journal is not a regular file: {journal}")
+        if not journal.exists():
+            return
+        try:
+            entries = json.loads(journal.read_text())
+            if not isinstance(entries, list):
+                raise ValueError("expected a list")
+            for entry in entries:
+                path = Path(entry["path"])
+                if (not path.is_absolute() or ".." in path.parts or str(path) != entry["path"] or
+                        path.parts[-4:-1] != ("drive_c", "windows", "system32") or
+                        path.name not in ("amdhip64_7.dll", "d3dcompiler_47.dll") or
+                        not re.fullmatch(r"[0-9a-f]{64}", entry["sha256"])):
+                    raise ValueError("invalid prefix path")
+                if any(parent.is_symlink() for parent in path.parents):
+                    raise ValueError(f"prefix ownership changed: {path}")
+                if not path.parent.is_dir():
+                    continue  # the prefix was deleted; there is nothing to give back
+                if "original_link" in entry:
+                    if not isinstance(entry["original_link"], str) or "backup" in entry:
+                        raise ValueError("invalid original prefix link")
+                    original = {"kind": "link", "target": entry["original_link"]}
+                    item = dict(path=str(path), link=entry["original_link"])
+                elif "backup" in entry:
+                    if entry["backup"] != hashlib.sha256(str(path).encode()).hexdigest() + ".dll":
+                        raise ValueError("invalid prefix backup name")
+                    original = {"kind": "file", "sha256": entry["backup_sha256"]}
+                    item = dict(path=str(path), backup=entry["backup"])
+                else:
+                    original, item = {"kind": "missing"}, dict(path=str(path))
+                current = _state(path)
+                if current == original:
+                    continue
+                if current["kind"] != "missing" and current != {"kind": "file", "sha256": entry["sha256"]}:
+                    plan["kept"].append(dict(path=str(path), reason="changed since AMDNR replaced it; left as it is"))
+                    continue
+                if "backup" in item:
+                    backup = game / "amdnr-linux/prefix-backups" / item["backup"]
+                    if backup.is_symlink() or not backup.is_file() or _sha(backup) != entry["backup_sha256"]:
+                        raise ValueError(f"missing or changed prefix backup: {backup}")
+                plan["prefix"].append(item)
+        except (KeyError, TypeError, ValueError) as error:
+            raise ConflictError(f"Cannot give back the Proton prefix files AMDNR replaced: {error}") from error
+
+    def clean(self, game_dir):
+        """Remove what leftovers() lists, as one recoverable transaction."""
+        game = self._game(game_dir)
+        with self._lock(game):
+            plan = self.leftovers(game)
+            if plan["issues"]:
+                raise ConflictError("\n".join(plan["issues"]))
+            if not any(plan[key] for key in ("remove", "restore", "folders", "prefix")):
+                raise ConflictError("No leftover AMDNR files were found in this folder.")
+            operations = []
+            if plan["save_config"]:
+                # As with Uninstall, the last AMDNR settings stay in the state folder.
+                operations.append(self._operation(self._safe(self.state_dir, "configs/" + self._key(game) + ".ini"),
+                                                  source=self._safe(game, "OptiScaler.ini")))
+            # Originals go back before the backups holding them are removed.
+            for item in plan["prefix"]:
+                path = Path(item["path"])
+                if "backup" in item:
+                    backup = self._safe(game, "amdnr-linux/prefix-backups/" + item["backup"])
+                    operations.append(self._operation(path, source=backup))
+                elif "link" in item:
+                    operations.append(self._operation(path, link=item["link"]))
+                else:
+                    operations.append(self._operation(path))
+            for relative in plan["restore"]:
+                operations.append(self._operation(self._safe(game, relative),
+                                                  source=self._safe(game, self.manage.BACKUP + "/" + relative)))
+            operations += [self._operation(self._safe(game, relative)) for relative in plan["remove"]]
+            # The folder ends up as after an uninstall, an action every launcher version reads.
+            operations.append(self._receipt_operation(game, "uninstall"))
+            self.progress("Removing leftover AMDNR files…")
+            self._commit(game, operations)
+            self._prune_leftovers(game, plan)
+            self.progress("Leftover AMDNR files removed." + (" Original game files were put back." if plan["restore"] else ""))
+        return self.inspect(game)
+
+    def _prune_leftovers(self, game, plan):
+        """Remove AMDNR's folders and those of removed files once nothing is left in them."""
+        folders = {PurePosixPath(name) for name in plan["folders"]}
+        for relative in plan["remove"]:
+            folders.update(parent for parent in PurePosixPath(relative).parents if parent.parts)
+        for name in (self.manage.BACKUP, *_LEFTOVER_FOLDERS):
+            root = game / name
+            if root.is_dir() and not root.is_symlink():
+                folders.update(PurePosixPath(Path(directory).relative_to(game).as_posix())
+                               for directory, _, _ in os.walk(root, followlinks=False))
+        for folder in sorted(folders, key=lambda item: len(item.parts), reverse=True):
+            path = game.joinpath(*folder.parts)
+            if (path.is_dir() and not path.is_symlink()
+                    and not any(parent.is_symlink() for parent in path.parents if game in parent.parents)):
+                try:
+                    path.rmdir()
+                except OSError:
+                    pass  # something else is still in it
 
     def diagnostics(self, game_dir):
         game = self._game(game_dir)

@@ -350,6 +350,52 @@ class SteamTests(unittest.TestCase):
         self.assertEqual(path.read_bytes(), changed)
         self.assertTrue(steam.journal_path(self.game, self.state).exists())
 
+    def test_leftover_wrapper_is_found_and_removed_with_or_without_journal(self):
+        path = self.account('MANGOHUD=1 %command% --x')
+        before = path.read_bytes()
+        self.assertFalse(steam.wrapper_leftover(self.game, self.wrapper, self.state))
+        self.assertFalse(steam.remove_wrapper(self.game, self.wrapper, self.state))
+        steam.configure_launch(self.game, self.wrapper, self.state)
+        self.wrapper.unlink()  # its files are already gone
+        self.assertTrue(steam.wrapper_leftover(self.game, self.wrapper, self.state))
+        self.assertTrue(steam.remove_wrapper(self.game, self.wrapper, self.state))
+        self.assertEqual(path.read_bytes(), before)
+        self.assertFalse(steam.journal_path(self.game, self.state).exists())
+        self.assertFalse(steam.wrapper_leftover(self.game, self.wrapper, self.state))
+        # Added by hand, as the command-line guide describes: only the wrapper goes.
+        quoted = steam.shlex.quote(str(self.wrapper))
+        for options, expected in ((f'MANGOHUD=1 {quoted} %command% --x', 'MANGOHUD=1 %command% --x'),
+                                  (f'{quoted} %command%', None)):
+            with self.subTest(options=options):
+                path = self.account(options)
+                self.assertTrue(steam.wrapper_leftover(self.game, self.wrapper, self.state))
+                self.assertTrue(steam.remove_wrapper(self.game, self.wrapper, self.state))
+                self.assertEqual(self.option(path), expected)
+        self.assertEqual(path.read_bytes(), config(None))  # the whole LaunchOptions line went
+
+    def test_leftover_wrapper_keeps_later_edits_and_other_installations(self):
+        path = self.account('%command%')
+        steam.configure_launch(self.game, self.wrapper, self.state)
+        path.write_bytes(path.read_bytes().replace(b'%command%', b'%command% --new-user-arg'))
+        self.assertTrue(steam.remove_wrapper(self.game, self.wrapper, self.state))
+        self.assertEqual(self.option(path), '%command% --new-user-arg')
+        self.assertFalse(steam.journal_path(self.game, self.state).exists())
+        self.assertFalse((steam.journal_path(self.game, self.state).parent / '123-backups').exists())
+        unsafe = self.account(f'%command% {steam.shlex.quote(str(self.wrapper))}')
+        before = unsafe.read_bytes()
+        with self.assertRaisesRegex(ValueError, 'cannot be edited safely'):
+            steam.remove_wrapper(self.game, self.wrapper, self.state)
+        self.assertEqual(unsafe.read_bytes(), before)
+        # Another folder's installation owns the options its journal records.
+        path = self.account('%command%')
+        steam.configure_launch(self.game, self.wrapper, self.state)
+        configured = path.read_bytes()
+        elsewhere = self.install / 'Elsewhere/amdnr-linux/run.sh'
+        self.assertFalse(steam.wrapper_leftover(self.game, elsewhere, self.state))
+        self.assertFalse(steam.remove_wrapper(self.game, elsewhere, self.state))
+        self.assertEqual(path.read_bytes(), configured)
+        self.assertTrue(steam.journal_path(self.game, self.state).exists())
+
     def test_malformed_or_multiple_command_options_do_not_write(self):
         for option in ('%command% %command%', 'prefix%command%', '"%command%"',
                        '"unterminated', '%command%; echo bad', '$(bad) %command%',

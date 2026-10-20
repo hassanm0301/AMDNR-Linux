@@ -220,6 +220,16 @@ Close the game and Steam before using the selected game’s actions:
 - **Uninstall and restore originals** removes the managed addon and restores
   original game files, owned prefix files and Steam launch options. Your current
   addon configuration is also saved in the manager's data folder. Saves are kept.
+- **Remove leftover AMDNR files** takes the place of Uninstall when a game has
+  no installation record but AMDNR files are still there: logs, crash dumps and
+  session markers from earlier game sessions, or a whole installation whose
+  `.amdnr-linux-install.json` was lost. It lists every change and asks first.
+  It puts originals back from `.amdnr-linux-backup` and the Proton prefix, takes
+  the AMDNR wrapper out of Steam's launch options, and removes only files it can
+  show are AMDNR's: this addon's own folders, and files that name AMDNR (the host
+  DLL, `OptiScaler.ini`, the host's logs). Finished `AMDNR-report-*.zip` reports,
+  other mods (including another OptiScaler build) and files it cannot attribute
+  stay where they are; the list names them and says why.
 
 A failed or interrupted operation retains recovery information. With the game
 and Steam closed, repeat the action to recover it before continuing. If a file,

@@ -225,6 +225,19 @@ the original backup, use:
 python3 linux/manage.py uninstall "/path/to/game/executable/directory" --force
 ```
 
+Uninstall needs the installation record. If the folder has none but still
+holds AMDNR files (logs left after uninstalling, or an installation whose
+`.amdnr-linux-install.json` was lost), list and remove them with:
+
+```sh
+python3 linux/manage.py clean "/path/to/game/executable/directory"
+```
+
+It prints every change and asks first (`--yes` skips the question). Originals in
+`.amdnr-linux-backup` and the Proton prefix go back; other mods and files it
+cannot show to be AMDNR's stay. Remove the wrapper from the launch options
+yourself.
+
 ## Troubleshooting
 
 | Symptom | What to check |

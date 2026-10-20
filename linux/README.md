@@ -268,6 +268,17 @@ installed file changed, uninstall stops and identifies it. Save that change firs
 original backup. Restore before installing a newer package. Do not manually
 delete the backup or prefix journal while the package is installed.
 
+Uninstall keeps the logs the host wrote while the game ran, and it needs the
+installation record. For a folder without a record that still holds AMDNR files,
+`./linux/manage.py clean "/path/to/game/executable/directory"` lists them, asks,
+and removes them in one recoverable transaction (the manager's **Remove leftover
+AMDNR files**). Originals in `.amdnr-linux-backup` and in the prefix journal go
+back. A file is removed only on evidence: this addon's folders, or AMDNR named
+inside the host DLL, `OptiScaler.ini` or the host's logs; the patched
+vkd3d-proton DLLs and the shader compiler only beside this addon's own traces.
+Finished report zips, other OptiScaler builds, links and anything it cannot
+attribute stay.
+
 ## Validation
 
 CPU/package checks:

@@ -138,6 +138,30 @@ class PackageTests(unittest.TestCase):
         self.assertEqual(set(path.name for path in self.game.iterdir()), {"d3d12.dll"})
         self.assertEqual((self.game / "d3d12.dll").read_bytes(), b"original mod")
 
+    def test_cli_clean_lists_asks_and_removes_leftovers_of_a_lost_install(self):
+        (self.package / "winmm.dll").write_bytes(b"MZ" + "OptiScaler.ini".encode("utf-16-le") + "AMDNR".encode("utf-16-le"))
+        manage.install(self.package, self.game)
+        (self.game / "OptiScaler.log").write_bytes(b"[W] AMDNR session start\n")
+        (self.game / "unrelated.save").write_bytes(b"save")
+        (self.game / manage.RECORD).unlink()
+        env = dict(os.environ, XDG_DATA_HOME=str(self.root / "data"), XDG_CACHE_HOME=str(self.root / "cache"))
+
+        def command(*args, answer=""):
+            result = subprocess.run([sys.executable, str(ROOT / "manage.py"), "clean", str(self.game), *args],
+                                    env=env, input=answer, capture_output=True, text=True, timeout=15)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            return result.stdout
+
+        output = command(answer="n\n")
+        for line in ("Remove: OptiScaler.log", "Remove: winmm.dll", "Remove: amdnr-linux/run.sh",
+                     "Remove: d3dcompiler_47.dll", "Put back original: d3d12.dll", "Nothing was changed."):
+            self.assertIn(line, output)
+        self.assertTrue((self.game / "winmm.dll").exists())
+        self.assertIn("Leftover AMDNR files removed. Original game files were put back.", command("--yes"))
+        self.assertEqual(sorted(path.name for path in self.game.iterdir()), ["d3d12.dll", "unrelated.save"])
+        self.assertEqual((self.game / "d3d12.dll").read_bytes(), b"original mod")
+        self.assertIn("No leftover AMDNR files were found.", command())
+
     def test_modified_file_requires_explicit_restore(self):
         manage.install(self.package, self.game)
         (self.game / "winmm.dll").write_bytes(b"later user mod")

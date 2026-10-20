@@ -321,6 +321,37 @@ def uninstall(game, force=False):
     record_path.unlink()
     print(f"Restored {game}")
 
+def clean(game, assume_yes=False):
+    """Remove what an installation left once no installation record describes it."""
+    from native_launcher.backend import BackendError
+    from native_launcher.controller import Controller
+    from native_launcher.steam import SteamGame
+    game = game.resolve()
+    controller = Controller(ROOT.parent)
+    try:
+        plan = controller.backend.leftovers(game)
+    except BackendError as error:
+        raise ValueError(str(error)) from error
+    for label, items in (("Remove", plan["remove"]), ("Remove empty folder", plan["folders"]),
+                         ("Put back original", plan["restore"]),
+                         ("Put back original prefix file", [item["path"] for item in plan["prefix"]])):
+        for item in items:
+            print(f"{label}: {item}")
+    for item in plan["kept"]:
+        print(f"Keep: {item['path']} ({item['reason']})")
+    if plan["issues"]:
+        raise ValueError("\n".join(plan["issues"]))
+    if not any(plan[key] for key in ("remove", "restore", "folders", "prefix")):
+        print("No leftover AMDNR files were found.")
+        return
+    if not assume_yes and input("Make these changes? [y/N] ").strip().lower() not in ("y", "yes"):
+        print("Nothing was changed.")
+        return
+    try:
+        print(controller.operate("clean", SteamGame("", game.name, game, Path(), game, game))["message"])
+    except BackendError as error:
+        raise ValueError(str(error)) from error
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -348,6 +379,9 @@ def main():
     u = sub.add_parser("uninstall")
     u.add_argument("game", type=Path)
     u.add_argument("--force", action="store_true")
+    c = sub.add_parser("clean", help="Remove files AMDNR left in a game folder that has no installation record")
+    c.add_argument("game", type=Path)
+    c.add_argument("--yes", action="store_true", help="Make the listed changes without asking")
     args = parser.parse_args()
     if args.command == "stage":
         with tempfile.TemporaryDirectory(prefix="amdnr-components-") as temporary:
@@ -385,6 +419,8 @@ def main():
             entry = controller.set_executable(entry, executable)
         result = controller.operate("switch_proxy", entry, proxy=args.proxy)
         print(result["message"])
+    elif args.command == "clean":
+        clean(args.game, args.yes)
     else:
         uninstall(args.game, args.force)
 

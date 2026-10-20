@@ -365,6 +365,8 @@ class Window(QMainWindow):
             actions.addLayout(row)
         self.uninstall = self.button("Uninstall and restore originals", lambda: self.operate("uninstall"), "danger")
         actions.addWidget(self.uninstall)
+        self.clean = self.button("Remove leftover AMDNR files", lambda: self.operate("clean"), "danger")
+        actions.addWidget(self.clean)
         self.component_panel = QWidget()
         self.component_panel.setObjectName("componentPanel")
         component_layout = QVBoxLayout(self.component_panel)
@@ -475,6 +477,14 @@ class Window(QMainWindow):
                   self.inspection.get("health_issues") or
                   (installed and (self.inspection.get("missing") or self.inspection.get("modified"))) or
                   self.controller.pending_operation(self.game)) if selected else False
+        # Leftovers replace Uninstall, which needs an installation record.
+        leftovers = bool(resolved and not installed and self.leftover_count())
+        self.clean.setVisible(leftovers)
+        self.uninstall.setVisible(not leftovers)
+        self.clean.setEnabled(bool(leftovers and not self.busy and not ambiguous and not self.inspection.get("running")
+                                   and not self.inspection.get("recovery_needed")
+                                   and not self.inspection["leftovers"].get("issues")
+                                   and not self.controller.pending_operation(self.game)))
         store = stores.store_name(self.game) if selected else None
         launch_issue = stores.launch_issue(self.game, installed) if store else None
         self.launch.setText(f"Launch in {store or 'Steam'} ↗")
@@ -503,8 +513,53 @@ class Window(QMainWindow):
         self.components_apply.setEnabled(bool(can_choose and installed and not unsafe
                                               and self.selected_components() != self.installed_components()))
 
+    def leftover_count(self):
+        """How many things the last inspection found for Remove leftover AMDNR files to change."""
+        found = self.inspection.get("leftovers") or {}
+        return (sum(len(found.get(key) or ()) for key in ("remove", "restore", "folders", "prefix"))
+                + bool(found.get("steam_wrapper")))
+
+    def leftover_text(self):
+        found = self.inspection.get("leftovers") or {}
+        count = len(found.get("remove") or ()) + len(found.get("folders") or ())
+        text = "AMDNR is not installed here, but an earlier installation or its game sessions left "
+        text += f"{count} item{'s' if count != 1 else ''} behind." if count else "changes behind."
+        if found.get("restore") or found.get("prefix"):
+            text += " Original files it replaced are still in its backups."
+        text += " Remove leftover AMDNR files lists every change before it starts."
+        if found.get("steam_wrapper"):
+            text += "\nSteam's launch options still start this game through the AMDNR wrapper."
+        if found.get("issues"):
+            text += "\nThey cannot be removed yet:\n" + "\n".join(found["issues"])
+        return text
+
+    def confirm_clean(self):
+        found = self.inspection.get("leftovers") or {}
+        groups = {}
+        for name in found.get("remove") or ():
+            top, _, rest = name.partition("/")
+            groups.setdefault(top + "/" if rest else top, []).append(name)
+        items = [f"Remove {key} ({len(names)} files)" if key.endswith("/") else f"Remove {key}"
+                 for key, names in groups.items()]
+        items += [f"Remove the empty {name}/ folder" for name in found.get("folders") or ()]
+        items += [f"Put back the original {name}" for name in found.get("restore") or ()]
+        items += [f"Put back the original {item['path']}" for item in found.get("prefix") or ()]
+        if found.get("steam_wrapper"):
+            items.append("Take the AMDNR wrapper out of Steam's launch options")
+        shown, kept = items[:15], found.get("kept") or []
+        text = (f"Clean up after AMDNR in {self.game.name}?\n\n" + "\n".join("• " + item for item in shown)
+                + (f"\n• …and {len(items) - len(shown)} more" if len(items) > len(shown) else ""))
+        if kept:
+            text += "\n\nLeft as they are:\n" + "\n".join(f"• {item['path']}: {item['reason']}" for item in kept[:5])
+            text += f"\n• …and {len(kept) - 5} more" if len(kept) > 5 else ""
+        text += "\n\nYour saves are kept."
+        if found.get("save_config"):
+            text += " The current OptiScaler.ini is first copied to the launcher's data folder."
+        answer = QMessageBox.question(self, "Remove leftover AMDNR files?", text)
+        return answer == QMessageBox.StandardButton.Yes
+
     def selected_components(self):
-        plugins = (self.inspection.get("component_choices") or {}).get("optipatcher") or [None]
+        plugins =(self.inspection.get("component_choices") or {}).get("optipatcher") or [None]
         selection = {"daniel": self.runtime_choice.currentData(),
                      "optipatcher": plugins[0] if self.optipatcher_check.isChecked() else None}
         if self.host_choice.currentData() not in (None, "amdnr"):
@@ -886,7 +941,8 @@ class Window(QMainWindow):
             self.description.setText("Close Steam and this game, then use Install or Repair. The launcher will recover the previous operation first.")
         elif result.get("conflicts"):
             self.status.setText("Existing files need attention")
-            self.description.setText("\n".join(result["conflicts"]))
+            self.description.setText("\n".join(result["conflicts"]) + (
+                "\n" + self.leftover_text() if self.leftover_count() else ""))
         elif result.get("installed"):
             damaged = len(result.get("missing", [])) + len(result.get("modified", []))
             health_issues = result.get("health_issues", [])
@@ -896,6 +952,9 @@ class Window(QMainWindow):
                 self.description.setText("\n".join(details) + "\nRepair restores the installation and keeps your configuration.")
             else:
                 self.description.setText("Enable DLSS, FSR or XeSS in the game. Insert opens OptiScaler; Home toggles neural rendering.")
+        elif self.leftover_count():
+            self.status.setText("Leftover files found")
+            self.description.setText(self.leftover_text())
         else:
             self.status.setText("Ready to install")
             store = stores.store_name(self.game)
@@ -944,6 +1003,8 @@ class Window(QMainWindow):
             answer = QMessageBox.question(self, "Restore this game?", f"Remove neural rendering from {self.game.name} and restore its {restored}?\n\nYour saves are kept.")
             if answer != QMessageBox.StandardButton.Yes:
                 return
+        if action == "clean" and not self.confirm_clean():
+            return
         if action == "install" and (not self.confirm_notices() or not self.save_components()):
             return
         self.last_operation = action
