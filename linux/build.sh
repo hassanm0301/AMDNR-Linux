@@ -17,7 +17,7 @@ trap 'rm -rf -- "$temporary"' EXIT
 python3 "$root/bridge/generate.py" "$out/generated"
 "${CC:-cc}" -shared -fPIC -std=gnu11 -O2 -g -Wall -Wextra -Werror=implicit-function-declaration \
     -I"$rocm/include" -I"$root/bridge" -I"$out/generated" \
-    "$root/bridge/loader.c" "$root/bridge/native_vulkan.c" "$root/bridge/fence_unix.c" \
+    "$root/bridge/loader.c" "$root/bridge/native_vulkan.c" "$root/bridge/fence_unix.c" "$root/bridge/identity_unix.c" \
     "$out/generated/unix_calls.c" -ldl -lpthread -o "$temporary/amdhip64_7.so"
 "${WINEGCC:-winegcc}" -b "${MINGW_TARGET:-x86_64-w64-mingw32}" -m64 -shared \
     -std=gnu11 -O2 -g -Wall -Wextra -Werror=implicit-function-declaration \

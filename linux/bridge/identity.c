@@ -4,7 +4,8 @@
 #define VK_USE_PLATFORM_WIN32_KHR
 #include <vulkan/vulkan.h>
 #include <initguid.h>
-#include <dxgi1_4.h>
+#include <dxgi1_6.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -87,6 +88,159 @@ static hipError_t match_adapter(PFN_vkGetInstanceProcAddr get, amdnr_dxgi_vk_ada
     return hipSuccess;
 }
 
+/* DXVK leaves DXGI_ADAPTER_DESC::Revision at 0: Vulkan has no PCI revision.
+ * The Windows host identifies a card by vendor, device and revision, and its
+ * table lists the RX 9070 XT only as 1002:7550 revision C0, so with 0 it does
+ * not know the GPU and turns off what it keeps for that class. Once a HIP
+ * device is matched to its DXVK adapter, that adapter's GetDesc calls report
+ * the PCI revision from sysfs where DXVK says 0 and the vendor and device IDs
+ * are the real ones (a spoofed description is left as it is). */
+enum { DESC_CALLS = 4, MAX_ADAPTERS = 8, MAX_VTABLES = 4 };
+typedef HRESULT (STDMETHODCALLTYPE *desc_call)(IUnknown *, DXGI_ADAPTER_DESC *);
+/* GetDesc1..3 fill the same leading fields as GetDesc. */
+_Static_assert(offsetof(DXGI_ADAPTER_DESC3, Revision) == offsetof(DXGI_ADAPTER_DESC, Revision) &&
+               offsetof(DXGI_ADAPTER_DESC3, AdapterLuid) == offsetof(DXGI_ADAPTER_DESC, AdapterLuid) &&
+               offsetof(DXGI_ADAPTER_DESC1, AdapterLuid) == offsetof(DXGI_ADAPTER_DESC, AdapterLuid),
+               "DXGI adapter descriptions share their leading fields");
+static const size_t desc_slot[DESC_CALLS] = {
+    offsetof(IDXGIAdapter4Vtbl, GetDesc) / sizeof(void *), offsetof(IDXGIAdapter4Vtbl, GetDesc1) / sizeof(void *),
+    offsetof(IDXGIAdapter4Vtbl, GetDesc2) / sizeof(void *), offsetof(IDXGIAdapter4Vtbl, GetDesc3) / sizeof(void *)};
+static struct { LUID luid; unsigned vendor, device, revision; } pci_ids[MAX_ADAPTERS];
+static struct { void **vtable; desc_call original[DESC_CALLS]; } wrapped[MAX_VTABLES];
+static volatile LONG pci_count, wrapped_count;
+static SRWLOCK pci_lock = SRWLOCK_INIT;
+
+static void report_revision(DXGI_ADAPTER_DESC *desc)
+{
+    if (desc->Revision) return;
+    AcquireSRWLockShared(&pci_lock);
+    for (LONG i = 0; i < pci_count; i++)
+        if (!memcmp(&pci_ids[i].luid, &desc->AdapterLuid, sizeof(LUID)) && pci_ids[i].vendor == desc->VendorId &&
+            pci_ids[i].device == desc->DeviceId)
+        {
+            desc->Revision = pci_ids[i].revision;
+            break;
+        }
+    ReleaseSRWLockShared(&pci_lock);
+}
+
+static HRESULT forward_desc(IUnknown *adapter, DXGI_ADAPTER_DESC *desc, int call)
+{
+    void **vtable = *(void ***)adapter;
+    desc_call original = NULL;
+    /* An entry is complete before its count is published and before its slots
+     * point here, so no lock is needed to find it. */
+    for (LONG i = 0; i < wrapped_count && !original; i++)
+        if (wrapped[i].vtable == vtable) original = wrapped[i].original[call];
+    if (!original) return E_FAIL;
+    HRESULT hr = original(adapter, desc);
+    if (SUCCEEDED(hr) && desc) report_revision(desc);
+    return hr;
+}
+static HRESULT STDMETHODCALLTYPE get_desc(IUnknown *adapter, DXGI_ADAPTER_DESC *desc) { return forward_desc(adapter, desc, 0); }
+static HRESULT STDMETHODCALLTYPE get_desc1(IUnknown *adapter, DXGI_ADAPTER_DESC *desc) { return forward_desc(adapter, desc, 1); }
+static HRESULT STDMETHODCALLTYPE get_desc2(IUnknown *adapter, DXGI_ADAPTER_DESC *desc) { return forward_desc(adapter, desc, 2); }
+static HRESULT STDMETHODCALLTYPE get_desc3(IUnknown *adapter, DXGI_ADAPTER_DESC *desc) { return forward_desc(adapter, desc, 3); }
+static const desc_call desc_wrappers[DESC_CALLS] = {get_desc, get_desc1, get_desc2, get_desc3};
+
+static int same_object(IUnknown *adapter, REFIID iid)
+{
+    IUnknown *other = NULL;
+    if (FAILED(IUnknown_QueryInterface(adapter, iid, (void **)&other)) || !other) return 0;
+    IUnknown_Release(other);
+    return other == adapter;
+}
+
+/* DXVK's adapters share one vtable, so wrapping its GetDesc slots covers every
+ * factory the host or the game creates. The previous slot values are called,
+ * so hooks others installed there stay in the chain. */
+static void wrap_desc_calls(IUnknown *adapter)
+{
+    void **vtable = *(void ***)adapter;
+    int calls = same_object(adapter, &IID_IDXGIAdapter4) ? 4 : same_object(adapter, &IID_IDXGIAdapter2) ? 3 : 2;
+    AcquireSRWLockExclusive(&pci_lock);
+    LONG i = 0;
+    while (i < wrapped_count && wrapped[i].vtable != vtable) i++;
+    if (i == wrapped_count && i < MAX_VTABLES)
+    {
+        /* Pinned: a game freeing the bridge would leave the slots pointing at unmapped code. */
+        HMODULE self;
+        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+                           (LPCWSTR)(void *)wrap_desc_calls, &self);
+        wrapped[i].vtable = vtable;
+        for (int c = 0; c < calls; c++) wrapped[i].original[c] = (desc_call)vtable[desc_slot[c]];
+        InterlockedIncrement(&wrapped_count);
+        for (int c = 0; c < calls; c++)
+        {
+            void **slot = &vtable[desc_slot[c]];
+            DWORD protect;
+            if (!VirtualProtect(slot, sizeof(*slot), PAGE_READWRITE, &protect))
+            {
+                amdnr_log("DXGI adapter GetDesc slot %u could not be made writable: %lu", (unsigned)desc_slot[c], GetLastError());
+                continue;
+            }
+            InterlockedExchangePointer(slot, (void *)desc_wrappers[c]);
+            VirtualProtect(slot, sizeof(*slot), protect, &protect);
+        }
+    }
+    ReleaseSRWLockExclusive(&pci_lock);
+}
+
+static int pci_known(const LUID *luid)
+{
+    for (LONG i = 0; i < pci_count; i++)
+        if (!memcmp(&pci_ids[i].luid, luid, sizeof(*luid))) return 1;
+    return 0;
+}
+
+/* Once per adapter: the first properties call that matches it decides. The
+ * wrapper is installed whatever this call sees, since the host's own DXGI
+ * spoofing can show other IDs here than the unspoofed calls it identifies
+ * the GPU with; report_revision compares the IDs on every call. */
+static void report_pci_revision(const hipDeviceProp_t *properties, IDXGIAdapter1 *adapter, amdnr_dxgi_vk_adapter *interop)
+{
+    LUID luid;
+    memcpy(&luid, properties->luid, sizeof(luid));
+    AcquireSRWLockShared(&pci_lock);
+    int known = pci_known(&luid);
+    ReleaseSRWLockShared(&pci_lock);
+    if (known) return;
+    unsigned vendor = 0, device = 0, revision = 0;
+    if (amdnr_native_pci_identity(properties->pciDomainID, properties->pciBusID, properties->pciDeviceID,
+                                  &vendor, &device, &revision))
+        amdnr_log("PCI %04x:%02x:%02x IDs are not readable from sysfs; DXGI keeps DXVK's adapter revision",
+                  properties->pciDomainID, properties->pciBusID, properties->pciDeviceID);
+    AcquireSRWLockExclusive(&pci_lock);
+    const int added = !pci_known(&luid) && pci_count < MAX_ADAPTERS;
+    if (added)
+    {
+        pci_ids[pci_count].luid = luid;
+        pci_ids[pci_count].vendor = vendor;
+        pci_ids[pci_count].device = device;
+        pci_ids[pci_count].revision = revision;
+        InterlockedIncrement(&pci_count);
+    }
+    ReleaseSRWLockExclusive(&pci_lock);
+    if (!added || !revision) return;
+    /* DXVK's own adapter behind the interface, in case the one enumerated is another layer's wrapper. */
+    IDXGIAdapter1 *dxvk = NULL;
+    if (FAILED(interop->lpVtbl->QueryInterface(interop, &IID_IDXGIAdapter1, (void **)&dxvk)) || !dxvk)
+    {
+        dxvk = adapter;
+        IDXGIAdapter1_AddRef(dxvk);
+    }
+    wrap_desc_calls((IUnknown *)dxvk);
+    IDXGIAdapter1_Release(dxvk);
+    DXGI_ADAPTER_DESC1 desc;
+    if (FAILED(IDXGIAdapter1_GetDesc1(adapter, &desc)))
+        amdnr_log("DXGI adapter for PCI %04x:%04x revision %02x: GetDesc1 failed", vendor, device, revision);
+    else if (desc.VendorId == vendor && desc.DeviceId == device)
+        amdnr_log("DXGI adapter %04x:%04x reports PCI revision %02x (sysfs %02x)", vendor, device, desc.Revision, revision);
+    else
+        amdnr_log("DXGI adapter shows %04x:%04x here (spoofed); calls that see PCI %04x:%04x get revision %02x",
+                  desc.VendorId, desc.DeviceId, vendor, device, revision);
+}
+
 /* Match PCI addresses, not GPU enumeration order or marketing-name guesses.
  * The Windows runtime compares this LUID with ID3D12Device::GetAdapterLuid. */
 hipError_t amdnr_fix_identity(hipDeviceProp_t *properties, int ordinal)
@@ -132,6 +286,7 @@ hipError_t amdnr_fix_identity(hipDeviceProp_t *properties, int ordinal)
             continue;
         }
         result = match_adapter(get, interop, properties);
+        if (result == hipSuccess) report_pci_revision(properties, adapter, interop);
         interop->lpVtbl->Release(interop);
         IDXGIAdapter1_Release(adapter);
         if (result == hipSuccess)

@@ -147,8 +147,12 @@ def main():
     parser.add_argument("--model-e", type=Path, metavar="DIR",
                         help="Model E built by setup.py prepare --model-e (its HelixSR folder); adds host runs on the "
                              "FSR 3.1 path without and with Model E, then Model E with lmxxf NR (implies --host-pipeline)")
+    parser.add_argument("--native-tier", action="store_true",
+                        help="Add host runs at 2646x1108 -> 3440x1440 with lmxxf's native network size "
+                             "(AmdLmxxfTierCap=native, NVIDIA look, after upscaling); needs an RX 9070-class GPU "
+                             "(implies --host-pipeline)")
     args = parser.parse_args()
-    if args.daniel_runtime or args.optipatcher or args.model_e:
+    if args.daniel_runtime or args.optipatcher or args.model_e or args.native_tier:
         args.host_pipeline = True
     if not 3 <= args.frames <= 10000:
         parser.error("--frames must be between 3 and 10000")
@@ -180,6 +184,8 @@ def main():
             parser.error("--model-e must name a Model E folder built by setup.py prepare --model-e")
         if not runtimes.host_loads_model_e(package / "winmm.dll"):
             parser.error("This package's host cannot load Model E; stage AMDNR 0.3.5.6 or newer")
+    if args.native_tier and not args.lmxxf:
+        parser.error("--native-tier needs a package with the lmxxf runtime")
     work.mkdir(parents=True, exist_ok=True)
     # A second run in the same directory must not replace evidence or restore
     # prefix files while the first run still owns that isolated environment.
@@ -400,6 +406,31 @@ def run_suite(args, package, build, work, proton):
                         if change < .0001 or changed < .01:
                             raise RuntimeError("Model E output did not materially differ from FSR 3.1; HelixSR may not have run")
                         print("PASS: Model E output differs from FSR 3.1 on the same frames", flush=True)
+            if args.native_tier:
+                # An ultrawide 1440p frame: above 1920x1080, so without the native size lmxxf fits it into
+                # the 1080 tier. The host allows native only once it identifies an RX 9070-class GPU.
+                native_env = dict(env, AMDNR_TEST_HOST_SIZE="2646x1108:3440x1440")
+                for label, mode in (("native-baseline", "baseline"), ("native", "neural")):
+                    run_settings = {**settings, ("DlssNr", "Enabled"): "true" if mode == "neural" else "false",
+                                    ("DlssNr", "NrBackend"): "lmxxf", ("DlssNr", "AmdLmxxfTierCap"): "native",
+                                    ("DlssNr", "AmdNrLook"): "0", ("DlssNr", "AmdPlacement"): "post"}
+                    host_config(package / "OptiScaler.ini", work / "OptiScaler.ini", run_settings)
+                    for name in logs:
+                        (work / name).unlink(missing_ok=True)
+                    reference = windows(work / "host-native-baseline.bin") if mode == "neural" else "-"
+                    execute([wine, work / "host_neural.exe", windows(work / "winmm.dll"), mode,
+                             windows(work / f"host-{label}.bin"), reference], native_env, work,
+                            work / f"host-pipeline-{label}.log", expect_pass=True)
+                    for name in logs:
+                        if (work / name).exists():
+                            shutil.copy2(work / name, work / f"{Path(name).stem}-host-{label}.log")
+                bridge_log = (work / "amd_bridge-host-native.log").read_text(errors="replace")
+                if not re.search(r"AMD neural: GPU [^\n]*\(gfx1201", bridge_log):
+                    raise RuntimeError("The host did not identify an RX 9070-class GPU (gfx1201); see amd_bridge-host-native.log")
+                backend_log = (work / "lmxxf_backend-host-native.log").read_text(errors="replace")
+                if "native size - the network runs the frame" not in backend_log:
+                    raise RuntimeError("lmxxf did not run the native network size; see lmxxf_backend-host-native.log")
+                print("PASS: host identified gfx1201 and lmxxf ran its native network size at 3440x1440", flush=True)
         report["status"] ="passed_with_skips" if any(test["status"] in ("skipped", "passed_with_skips") for test in report["tests"]) else "passed"
     except BaseException as error:
         original_error = error

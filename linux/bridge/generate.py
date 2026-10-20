@@ -116,7 +116,8 @@ def generate(output):
     catalog += [(name, args, 'hipError_t') for name, args in EXTRA]
     catalog += [(name, 'hipError_t error', 'const char *') for name in ('hipGetErrorName', 'hipGetErrorString')]
     catalog += [(name, args, result_type) for name, args, result_type, _ in REGISTRATION]
-    ids = [name for name, _, _ in catalog] + ['vulkan_fd', 'close_fd', 'fence_launch', 'fence_wait', 'fence_complete']
+    ids = [name for name, _, _ in catalog] + ['vulkan_fd', 'close_fd', 'fence_launch', 'fence_wait', 'fence_complete',
+                                              'pci_identity']
     shared = ['/* Generated. SPDX-License-Identifier: GPL-3.0-or-later */', '#pragma once', '#include "hip_types.h"',
               '#include "fence_shared.h"', 'enum amdnr_unix_code {']
     shared += [f'    AMDNR_UNIX_{name},' for name in ids]
@@ -156,9 +157,11 @@ def generate(output):
                    f'    args->result = function ? {call} : {fallback};',
                    '    return 0;', '}']
     shared += ['struct amdnr_args_vulkan_fd { uint64_t device, memory; int32_t fd, result; };',
-               'struct amdnr_args_close_fd { int32_t fd; };']
+               'struct amdnr_args_close_fd { int32_t fd; };',
+               'struct amdnr_args_pci_identity { int32_t domain, bus, device; uint32_t vendor, device_id, revision; int32_t result; };']
     header += ['int amdnr_native_vulkan_fd(uint64_t device, uint64_t memory, int *fd);',
                'void amdnr_native_close_fd(int fd);',
+               'int amdnr_native_pci_identity(int domain, int bus, int device, unsigned *vendor, unsigned *device_id, unsigned *revision);',
                'hipError_t amdnr_native_fence_launch(hipStream_t stream, void **token);',
                'hipError_t amdnr_native_fence_wait(void *token);',
                'hipError_t amdnr_native_fence_complete(void *token);']
@@ -170,6 +173,10 @@ def generate(output):
            'void amdnr_native_close_fd(int fd) {',
            '    struct amdnr_args_close_fd args = {fd};',
            '    amdnr_unix_call(AMDNR_UNIX_close_fd, &args);', '}',
+           'int amdnr_native_pci_identity(int domain, int bus, int device, unsigned *vendor, unsigned *device_id, unsigned *revision) {',
+           '    struct amdnr_args_pci_identity args = {domain, bus, device, 0, 0, 0, -1};',
+           '    if (amdnr_unix_call(AMDNR_UNIX_pci_identity, &args) || args.result) return -1;',
+           '    *vendor = args.vendor; *device_id = args.device_id; *revision = args.revision; return 0;', '}',
            'hipError_t amdnr_native_fence_launch(hipStream_t stream, void **token) {',
            '    struct amdnr_fence_launch_args args = {stream, NULL, hipErrorNotSupported};',
            '    *token = NULL;',
@@ -182,7 +189,7 @@ def generate(output):
                '    return (hipError_t)args.result;', '}']
     native += ['extern int32_t amdnr_unix_vulkan_fd(void *);', 'extern int32_t amdnr_unix_close_fd(void *);',
                'extern int32_t amdnr_unix_fence_launch(void *);', 'extern int32_t amdnr_unix_fence_wait(void *);',
-               'extern int32_t amdnr_unix_fence_complete(void *);',
+               'extern int32_t amdnr_unix_fence_complete(void *);', 'extern int32_t amdnr_unix_pci_identity(void *);',
                '__attribute__((visibility("default"))) const amdnr_unix_entry __wine_unix_call_funcs[] = {']
     native += [f'    call_{name},' for name, _, _ in catalog]
     native += [f'    amdnr_unix_{name},' for name in ids[len(catalog):]] + ['};',

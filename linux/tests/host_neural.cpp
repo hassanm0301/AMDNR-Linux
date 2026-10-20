@@ -17,7 +17,8 @@
 #include <string>
 #include <vector>
 
-static constexpr UINT width = 640, height = 360, out_width = 960, out_height = 540;
+// Render and output sizes; AMDNR_TEST_HOST_SIZE=RWxRH:OWxOH replaces them (e.g. 2646x1108:3440x1440).
+static UINT width = 640, height = 360, out_width = 960, out_height = 540;
 static constexpr unsigned ngx_success = 1;
 #define HR(call) do { HRESULT rc = (call); if (FAILED(rc)) { std::fprintf(stderr, "%s: %#lx\n", #call, (unsigned long)rc); return 1; } } while (0)
 #define NGX(call) do { unsigned rc = (call); if (rc != ngx_success) { std::fprintf(stderr, "%s: %#x\n", #call, rc); return 1; } } while (0)
@@ -159,6 +160,13 @@ int wmain(int argc, wchar_t **argv)
     bool neural = !std::wcscmp(argv[2], L"neural");
     unsigned frames = argc == 6 ? _wtoi(argv[5]) : 720;
     if (frames < 650 || frames > 10000 || (neural && !std::wcscmp(argv[4], L"-"))) return 1;
+    if (const char *size = std::getenv("AMDNR_TEST_HOST_SIZE")) {
+        if (std::sscanf(size, "%ux%u:%ux%u", &width, &height, &out_width, &out_height) != 4 || width < 64 || height < 64 ||
+            width > out_width || height > out_height || out_width > 7680 || out_height > 4320) {
+            std::fputs("AMDNR_TEST_HOST_SIZE must be RWxRH:OWxOH, render no larger than output, output up to 7680x4320\n", stderr);
+            return 1;
+        }
+    }
     wchar_t full_path[32768];
     DWORD path_length = GetFullPathNameW(argv[1], 32768, full_path, nullptr);
     if (!path_length || path_length >= 32768) return 1;

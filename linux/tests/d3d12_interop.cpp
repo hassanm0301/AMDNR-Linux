@@ -39,6 +39,10 @@ int main()
     IDXGIFactory4 *factory = nullptr; IDXGIAdapter1 *adapter = nullptr; ID3D12Device *device = nullptr;
     HR(CreateDXGIFactory1(IID_PPV_ARGS(&factory)));
     HR(factory->EnumAdapterByLuid(luid, IID_PPV_ARGS(&adapter)));
+    // DXVK reports PCI revision 0; the host's device table needs the real one to know the card.
+    DXGI_ADAPTER_DESC1 adapter_desc{}; HR(adapter->GetDesc1(&adapter_desc));
+    std::printf("DXGI adapter %04x:%04x revision %02x\n", adapter_desc.VendorId, adapter_desc.DeviceId, adapter_desc.Revision);
+    if (!adapter_desc.Revision) { std::fputs("DXGI still reports PCI revision 0 for the HIP adapter\n", stderr); return 1; }
     HR(D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
     D3D12_COMMAND_QUEUE_DESC qd{}; ID3D12CommandQueue *queue = nullptr;
     HR(device->CreateCommandQueue(&qd, IID_PPV_ARGS(&queue)));
