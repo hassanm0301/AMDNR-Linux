@@ -774,8 +774,7 @@ class LauncherBackend:
                         self.proxies.occupied(game, path.name)):
                     raise ConflictError(f"A new proxy target became occupied before installation: {path}")
                 entry = dict(path=str(path), before=before, after=operation["after"])
-                if "via" in operation:
-                    entry["via"] = str(operation["via"])
+                entry.update((key, str(operation[key])) for key in ("via", "copy_of") if key in operation)
                 if before["kind"] == "file":
                     backup = directory / str(index)
                     shutil.copy2(path, backup)
@@ -834,12 +833,7 @@ class LauncherBackend:
             prefix = path.parts[-4:-1] == ("drive_c", "windows", "system32") and path.name in _PREFIX_FILES
             saved_config = path == self.state_dir / "configs" / (self._key(game) + ".ini")
             receipt = path == self.state_dir / "game-receipts" / (self._key(game) + ".json")
-            # A mod manager's file, removed with the link to it that the same journal puts back.
-            via = entry.get("via")
-            linked = isinstance(via, str) and game in Path(via).parents and any(
-                other["path"] == via and other["before"].get("kind") == "link"
-                and os.path.realpath(Path(via).parent / other["before"]["target"]) == str(path)
-                for other in journal["entries"])
+            linked = self._tied_outside(game, journal["entries"], entry, path)
             if not path.is_absolute() or not (in_game or prefix or saved_config or receipt or linked) or any(parent.is_symlink() for parent in path.parents):
                 raise ConflictError(f"Unsafe recovery path: {path}")
             if _state(path) not in (entry["before"], entry["after"]):
@@ -865,6 +859,37 @@ class LauncherBackend:
             except OSError:
                 pass
         shutil.rmtree(directory)
+
+    @staticmethod
+    def _tied_outside(game, entries, entry, path):
+        """Whether the same journal ties an outside path to the game folder (see clean).
+
+        A mod manager's file needs the entry of the game link ("via") that the
+        journal puts back and that points to it. A manager's copy also needs the
+        entry of the game file it copies ("copy_of"), and must sit at that file's
+        relative path in the folder the link points into.
+        """
+        via, copy_of = entry.get("via"), entry.get("copy_of", "")
+        if not isinstance(via, str) or game not in Path(via).parents:
+            return False
+        if "copy_of" in entry:
+            if (not isinstance(copy_of, str) or game not in Path(copy_of).parents or ".." in Path(copy_of).parts
+                    or not any(other["path"] == copy_of and other["before"].get("kind") == "file" for other in entries)):
+                return False
+            link = [part.casefold() for part in Path(via).relative_to(game).parts]
+        for other in entries:
+            if other["path"] != via or other["before"].get("kind") != "link":
+                continue
+            target = Path(os.path.realpath(Path(via).parent / other["before"]["target"]))
+            if "copy_of" not in entry:
+                if target == path:
+                    return True
+                continue
+            root = target.parents[len(link) - 1] if len(target.parts) > len(link) else game
+            if ([part.casefold() for part in target.parts[-len(link):]] == link and root != game
+                    and root not in game.parents and root.joinpath(*Path(copy_of).relative_to(game).parts) == path):
+                return True
+        return False
 
     def _change(self, game_dir, package, mode, proxy="auto", executable=None, seeds=None):
         game = self._game(game_dir)
@@ -1205,15 +1230,18 @@ class LauncherBackend:
         run. A file is listed only on evidence: this addon's own folders, or
         AMDNR named inside a host DLL, OptiScaler.ini or the host's logs.
         "linked" maps listed paths that are a mod manager's links to the files
-        they point to (see _linked_target), which are removed with them.
+        they point to (see _linked_target), which are removed with them, and
+        "copies" maps that manager's copies of listed files that are not links
+        to the paths they copy (see _mirror_copies), removed too.
         """
         game = self._game(game_dir)
-        plan = dict(remove=[], restore=[], folders=[], prefix=[], kept=[], issues=[], linked={}, save_config=False)
+        plan = dict(remove=[], restore=[], folders=[], prefix=[], kept=[], issues=[], linked={}, copies={},
+                    save_config=False)
         try:
             self._scan_leftovers(game, plan)
         except (OSError, ValueError, ConflictError) as error:
             plan["issues"].append(str(error))
-            plan["linked"] = {}
+            plan["linked"], plan["copies"] = {}, {}
         return plan
 
     def _scan_leftovers(self, game, plan):
@@ -1349,6 +1377,20 @@ class LauncherBackend:
         # A linked file goes only where the link itself was listed on evidence. A restored
         # original replaces the link, and the AMDNR file it pointed to goes with it.
         plan["linked"] = {name: target for name, target in sorted(plan["linked"].items()) if name in remove}
+
+        def evidence(relative, path):
+            """Whether path, a copy of the listed file relative, passes the check that file needed."""
+            folded = relative.casefold()
+            if folded in _HOST_NAMES or folded in _GRAPHICS_NAMES:
+                found = _contains(path, (_OPTISCALER_INI, _AMDNR_NAME, _VKD3D))
+                if _OPTISCALER_INI in found:
+                    return _AMDNR_NAME in found or (traces and relative in self.proxies.SUPPORTED)
+                return traces and _VKD3D in found and folded in _GRAPHICS_NAMES
+            if relative == "OptiScaler.ini":
+                return len(foreign) < len(hosts) or b"AMDNR" in _contains(path, (b"AMDNR",), 4 * 1024**2)
+            return True  # every other rule goes by the path alone
+
+        plan["copies"] = self._mirror_copies(game, plan, evidence)
         current = game / "OptiScaler.ini"
         plan["save_config"] = ("OptiScaler.ini" in plan["remove"] or "OptiScaler.ini" in restored) and (
             (current.is_file() and not current.is_symlink()) or "OptiScaler.ini" in plan["linked"])
@@ -1396,6 +1438,39 @@ class LauncherBackend:
                 or not os.access(target.parent, os.W_OK | os.X_OK)):
             return None
         return target
+
+    @staticmethod
+    def _mirror_root(target, relative):
+        """The folder a mod manager's file mirrors the game folder in: target less relative."""
+        return Path(target).parents[len(PurePosixPath(relative).parts) - 1]
+
+    def _mirror_copies(self, game, plan, evidence):
+        """{copy: relative} for a mod manager's copies of listed files that are not links.
+
+        A folder that listed links point into (see _linked_target) may also hold
+        a file that is still a regular file in the game folder; the manager links
+        it back on its next deploy. Only a regular file at the same relative path
+        in such a folder, reached without links, in a folder this user can change
+        and passing evidence(relative, copy), goes; one failing evidence is kept
+        (and noted).
+        """
+        roots = {self._mirror_root(target, relative) for relative, target in plan["linked"].items()}
+        taken, copies = set(plan["linked"].values()), {}
+        for root in sorted(root for root in roots if root != game and root not in game.parents):
+            for relative in plan["remove"]:
+                parts = PurePosixPath(relative).parts
+                path, copy = game.joinpath(*parts), root.joinpath(*parts)
+                if (relative in plan["linked"] or path.is_symlink() or not path.is_file()
+                        or str(copy) in taken or str(copy) in copies or copy.is_symlink() or not copy.is_file()
+                        or any(parent.is_symlink() for parent in copy.parents if root in parent.parents)
+                        or not os.access(copy.parent, os.W_OK | os.X_OK)):
+                    continue
+                if evidence(relative, copy):
+                    copies[str(copy)] = relative
+                else:
+                    plan["kept"].append(dict(path=str(copy), reason="a mod manager's copy that does not look like "
+                                             "AMDNR's; the manager may link it back"))
+        return dict(sorted(copies.items()))
 
     def _leftover_path(self, game, relative):
         """The path of a listed leftover: it may be a link itself, but none of its folders may be."""
@@ -1502,9 +1577,15 @@ class LauncherBackend:
                 operations.append(self._operation(self._leftover_path(game, relative),
                                                   source=self._leftover_source(game, plan, self.manage.BACKUP + "/" + relative)))
             operations += [self._operation(self._leftover_path(game, relative)) for relative in plan["remove"]]
+            links = {}
             for relative, target in plan["linked"].items():
                 # The file a mod manager's link stood for; recovery may put it back only beside that link.
                 operations.append(dict(self._operation(Path(target)), via=self._leftover_path(game, relative)))
+                links[self._mirror_root(target, relative)] = relative
+            for copy, relative in plan["copies"].items():
+                # Recovery puts a copy back only beside the game file it copies and a link into the same folder.
+                operations.append(dict(self._operation(Path(copy)), copy_of=self._leftover_path(game, relative),
+                                       via=self._leftover_path(game, links[self._mirror_root(copy, relative)])))
             # The folder ends up as after an uninstall, an action every launcher version reads.
             operations.append(self._receipt_operation(game, "uninstall"))
             self.progress("Removing leftover AMDNR files…")
@@ -1520,7 +1601,8 @@ class LauncherBackend:
         folder that held removed files go.
         """
         linked = set()
-        for relative, target in plan["linked"].items():
+        mirrored = [(target, relative) for relative, target in plan["linked"].items()] + list(plan["copies"].items())
+        for target, relative in mirrored:
             linked.update(Path(target).parents[:len(PurePosixPath(relative).parts) - 1])
         for path in sorted(linked, key=lambda item: len(item.parts), reverse=True):
             try:

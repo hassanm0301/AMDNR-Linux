@@ -1063,6 +1063,109 @@ class BackendTests(unittest.TestCase):
                          {name: value for name, value in before.items()
                           if name.startswith(("mod manager/", "hop/", self.game.name + "/"))})
 
+    def manage_with_copies(self):
+        """A manager folder holding linked files and copies of files the game folder holds again as regular files."""
+        self.backend.install(self.game, self.realistic("C"))
+        self.game_session()
+        overwrite = self.manage_with_links(keep={"save.dat", "AMDNR-report-Game-20261019.zip"})
+        copied = {"winmm.dll", "d3d12core.dll", "LmxxfNrRuntime.pak", "OptiScaler.log", "amdnr-linux/run.sh",
+                  "OptiScaler/libxess.dll", "Licenses/AMDNR_NOTICE.txt", self.backend.manage.BACKUP + "/d3d12.dll"}
+        for name in copied:
+            (self.game / name).unlink()
+            shutil.copy2(overwrite / name, self.game / name)
+        return overwrite, copied
+
+    def test_one_clean_removes_a_mod_manager_folder_s_links_and_copies(self):
+        overwrite, copied = self.manage_with_copies()
+        # Other mods the manager keeps there stay.
+        (overwrite / "reframework").mkdir()
+        (overwrite / "reframework/autorun.lua").write_bytes(b"mod script")
+        plan = self.backend.leftovers(self.game)
+        self.assertEqual((plan["issues"], plan["kept"]), ([], []))
+        self.assertEqual(plan["copies"], {str(overwrite / name): name for name in copied})
+        self.assertTrue(copied <= set(plan["remove"]))
+        self.assertFalse(copied & set(plan["linked"]))
+        self.assertEqual(plan["linked"][self.backend.manage.RECORD], str(overwrite / self.backend.manage.RECORD))
+        before = snapshot(self.game), snapshot(overwrite)
+        self.assertEqual(self.backend.leftovers(self.game), plan)
+        self.assertEqual((snapshot(self.game), snapshot(overwrite)), before)  # listing changes nothing
+        self.backend.clean(self.game)
+        self.assertEqual(snapshot(self.game), {**self.initial, "AMDNR-report-Game-20261019.zip": ("file", b"PK report")})
+        self.assertEqual(snapshot(overwrite), {"reframework/autorun.lua": ("file", b"mod script")})
+        self.assertEqual([path.name for path in overwrite.iterdir()], ["reframework"])
+        with self.assertRaisesRegex(ConflictError, "No leftover"):
+            self.backend.clean(self.game)  # one pass was enough
+
+    def test_failed_clean_puts_back_a_mod_manager_s_copies(self):
+        overwrite, copied = self.manage_with_copies()
+        before = snapshot(self.game), snapshot(overwrite)
+        apply = self.backend._apply
+
+        def fail(operation):
+            apply(operation)
+            if operation["path"] == overwrite / "amdnr-linux/run.sh":
+                raise OSError("disk removed")
+
+        with patch.object(self.backend, "_apply", side_effect=fail):
+            with self.assertRaisesRegex(OSError, "disk removed"):
+                self.backend.clean(self.game)
+        self.assertEqual((snapshot(self.game), snapshot(overwrite)), before)
+        self.backend.clean(self.game)
+        self.assertEqual(snapshot(overwrite), {})
+
+    def test_mod_manager_copies_that_fail_the_game_file_s_checks_are_kept(self):
+        overwrite, copied = self.manage_with_copies()
+        loader = compiler_data(b"REFramework")
+        (overwrite / "winmm.dll").write_bytes(loader)  # not an OptiScaler host
+        (overwrite / "d3d12core.dll").write_bytes(b"Agility SDK")  # not the patched vkd3d-proton
+        (overwrite / "OptiScaler.log").unlink()
+        (overwrite / "OptiScaler.log").symlink_to(self.game / "save.dat")  # never followed
+        plan = self.backend.leftovers(self.game)
+        reason = "a mod manager's copy that does not look like AMDNR's; the manager may link it back"
+        self.assertEqual(plan["kept"], [dict(path=str(overwrite / "d3d12core.dll"), reason=reason),
+                                        dict(path=str(overwrite / "winmm.dll"), reason=reason)])
+        self.assertEqual(set(plan["copies"].values()), copied - {"winmm.dll", "d3d12core.dll", "OptiScaler.log"})
+        self.backend.clean(self.game)
+        self.assertEqual(snapshot(overwrite), {"winmm.dll": ("file", loader), "d3d12core.dll": ("file", b"Agility SDK"),
+                                               "OptiScaler.log": ("link", str(self.game / "save.dat"))})
+        self.assertEqual((self.game / "save.dat").read_bytes(), b"save game")
+
+    def test_recovery_restores_a_copy_only_beside_its_game_file_and_a_link_into_its_folder(self):
+        overwrite = self.root / "mod manager/overwrite"
+        overwrite.mkdir(parents=True)
+        directory = self.backend._transaction_dir(self.game)
+        directory.mkdir(parents=True)
+        sha = hashlib.sha256(b"session log").hexdigest()
+        for name in ("0", "1"):
+            (directory / name).write_bytes(b"session log")
+        link = dict(path=str(self.game / "winmm.dll"), before={"kind": "link", "target": str(overwrite / "winmm.dll")},
+                    after={"kind": "missing"}, created_dirs=[])
+        log = dict(path=str(self.game / "OptiScaler.log"), before={"kind": "file", "sha256": sha},
+                   after={"kind": "missing"}, backup="0", created_dirs=[])
+
+        def copy(path, **changes):
+            return {**dict(path=str(path), before={"kind": "file", "sha256": sha}, after={"kind": "missing"}, backup="1",
+                           created_dirs=[], via=link["path"], copy_of=log["path"]), **changes}
+
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        for entries in ([link, log, copy(elsewhere / "OptiScaler.log")],  # not in the folder the link points into
+                        [link, log, copy(elsewhere / "winmm.dll", copy_of=link["path"])],  # copies no removed file
+                        [link, copy(overwrite / "OptiScaler.log")],  # no game file it copies
+                        [log, copy(overwrite / "OptiScaler.log")],  # no link into that folder
+                        [link, log, copy(overwrite / "OptiScaler.log", via=log["path"])]):
+            (directory / "journal.json").write_text(json.dumps(
+                {"schema": 1, "game": str(self.game), "status": "prepared", "entries": entries}))
+            with self.assertRaisesRegex(ConflictError, "Unsafe recovery path"):
+                self.backend._recover(self.game)
+            self.assertEqual((list(elsewhere.iterdir()), list(overwrite.iterdir())), ([], []))
+        (directory / "journal.json").write_text(json.dumps(
+            {"schema": 1, "game": str(self.game), "status": "prepared", "entries": [link, log, copy(overwrite / "OptiScaler.log")]}))
+        self.backend._recover(self.game)
+        self.assertEqual((overwrite / "OptiScaler.log").read_bytes(), b"session log")
+        self.assertEqual((self.game / "OptiScaler.log").read_bytes(), b"session log")
+        self.assertEqual((self.game / "winmm.dll").readlink(), overwrite / "winmm.dll")
+
     def test_failed_clean_rolls_back_every_file(self):
         self.backend.install(self.game, self.realistic("C"))
         prefix, compiler = self.prefix()

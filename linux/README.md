@@ -283,7 +283,9 @@ Finished report zips, other OptiScaler builds and anything it cannot attribute
 stay. A link goes with the file it points to only when it looks like a link-based
 mod manager's (Amethyst, Vortex): a direct link to a regular file outside the
 game folder whose path ends in the link's own relative path, which passes the
-same checks. Other links stay.
+same checks. That folder's copy of a removed file that is not a link goes too,
+at the same relative path and on the same checks, so the manager has nothing to
+link back. Other links stay.
 
 ## Validation
 
