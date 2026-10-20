@@ -263,6 +263,19 @@ class SteamTests(unittest.TestCase):
         executable(empty / 'game.exe', x64=False)
         self.assertIsNone(steam.resolve_exe_directory(empty))
 
+    def test_unreal_root_launcher_resolves_to_its_shipping_executable(self):
+        stub = self.install / 'Game.exe'
+        executable(stub)
+        self.assertEqual(steam.unreal_game_executable(stub), stub)
+        shipping = self.install / 'Project/binaries/win64/Game-Win64-Shipping.exe'
+        executable(shipping)
+        executable(self.install / 'Project/Binaries/Win64/Other-Win64-Shipping.exe')
+        self.assertEqual(steam.unreal_game_executable(stub), shipping)
+        self.assertEqual(steam.unreal_game_executable(shipping), shipping)
+        # Two projects with the same game name leave the choice to the user.
+        executable(self.install / 'Copy/Binaries/Win64/Game-Win64-Shipping.exe')
+        self.assertEqual(steam.unreal_game_executable(stub), stub)
+
     def test_directory_resolution_distinguishes_crash_games_from_helpers(self):
         executable(self.install / 'CrashBandicoot4.exe')
         executable(self.install / 'tools/CrashReportClient.exe')

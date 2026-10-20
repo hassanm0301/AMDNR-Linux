@@ -55,7 +55,9 @@ Games installed through Heroic or Lutris are listed automatically (see below).
 For other non-Steam games, use **Add game** and select the main executable. The
 same file installation works, but the app displays a launch option for you to add
 to your existing Proton/Wine runner. Only Steam's launch options are set
-automatically.
+automatically. Choosing an Unreal game's root launcher (`Game.exe`) selects the
+`Game-Win64-Shipping.exe` under `Binaries/Win64` that it starts; point your
+runner at that executable too, so it finds `amdnr-linux/run.sh` beside it.
 
 The library loads Steam thumbnails and a banner for the selected game in the
 background. Downloaded artwork is cached under the manager's cache directory
@@ -316,6 +318,7 @@ and management, not a new neural model.
 | Game crashes or no neural frames appear | Check Proton version, GPU access and compiler; compare with `[DlssNr] Enabled=false` in `OptiScaler.ini`. |
 | Resident Evil Requiem stays black at startup | Check `re2_framework_log.txt`. If it ends at `Scanning DD2...` after suspending threads, see the REFramework note below. |
 | No AMDNR message or Insert menu | Confirm the selected folder matches the copy Steam launches, then Repair. Existing REFramework may use the same Insert key; change its menu key to Delete if both overlays open. |
+| Unreal Engine 4 game shows no AMDNR menu | Many UE4 games start in DX11. Add `-dx12` to the launch options, or add `[D3DRHIPreference]` with `bUseD3D12InGame=True` to the game's `Saved/Config/WindowsNoEditor/GameUserSettings.ini`. |
 | Need diagnostic files | Use Save logs. The export includes installation health, wrapper errors and available startup logs, even if the host never loaded. Review personal paths before sharing; nothing is sent automatically. |
 
 Resident Evil Requiem requires REFramework with OptiScaler. Older REFramework

@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 import base64
 import fcntl
+import glob
 import hashlib
 import json
 import os
@@ -214,6 +215,20 @@ def resolve_exe_directory(root: Path) -> Path | None:
         if preferred:
             return next(iter(preferred)) if len(preferred) == 1 else None
     return next(iter(candidates)) if len(candidates) == 1 else None
+
+
+def unreal_game_executable(executable: Path) -> Path:
+    """The Shipping executable an Unreal root launcher starts, else the executable.
+
+    A packaged Unreal game's root `Name.exe` only starts
+    `<Project>/Binaries/Win64/Name-Win64-Shipping.exe`, so a proxy DLL placed
+    beside the root executable never loads in the game.
+    """
+    executable = Path(executable)
+    pattern = f'*/Binaries/Win64/{glob.escape(executable.stem)}-Win64-Shipping.exe'
+    found = [path for path in executable.parent.glob(pattern, case_sensitive=False)
+             if not path.is_symlink() and _x64_executable(path)]
+    return found[0].resolve() if len(found) == 1 else executable
 
 
 def discover_games(roots: list[Path] | None = None) -> list[SteamGame]:

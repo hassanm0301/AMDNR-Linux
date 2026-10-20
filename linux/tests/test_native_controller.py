@@ -295,6 +295,24 @@ class ControllerTests(unittest.TestCase):
         prepare.assert_not_called()
         self.assertEqual(self.config.read_bytes(), self.config_before)
 
+    def test_manual_unreal_launcher_uses_the_shipping_folder_after_rescan(self):
+        folder = self.root / "Unreal Game"
+        stub, shipping, tool = (folder / "Game.exe", folder / "Game/Binaries/Win64/Game-Win64-Shipping.exe",
+                                folder / "Tools/Editor.exe")
+        for path in (stub, shipping, tool):
+            steam_fixture.executable(path)
+        folder, shipping, tool = folder.resolve(), shipping.resolve(), tool.resolve()
+        with patch.object(steam, "discover_games", return_value=[]):
+            self.app.add_manual(stub)
+            game = self.app.discover()[0]
+            self.assertEqual((game.name, game.exe_dir), ("Unreal Game", shipping.parent))
+            self.assertEqual(self.app.executable(game), shipping)
+            # Choose game executable on a manual game also survives a rescan.
+            self.app.set_executable(game, tool)
+            self.assertEqual(self.app.discover()[0].exe_dir, tool.parent)
+            self.app.set_executable(game, stub)
+            self.assertEqual(self.app.discover()[0].exe_dir, shipping.parent)
+
     def test_controller_repairs_nonexecutable_wrapper_before_launching(self):
         self.app.operate("install", self.game)
         wrapper = self.game_dir / "amdnr-linux/run.sh"

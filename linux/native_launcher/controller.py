@@ -209,21 +209,25 @@ class Controller:
         taken = {game.install_dir.resolve() for game in found}
         found += [game for game in stores.discover_games(self.heroic_roots, self.lutris_roots)
                   if game.install_dir not in taken]
-        self.games = sorted(found, key=lambda game: game.name.casefold())
-        for index, game in enumerate(self.games):
-            selected = self.settings.get("executables", {}).get(self.game_key(game))
-            if selected and not getattr(game, "library_ambiguous", False):
-                executable = Path(selected)
-                if executable.is_file() and executable.resolve().is_relative_to(game.install_dir.resolve()):
-                    self.games[index] = replace(game, exe_dir=executable.resolve().parent)
+        self.games = [self.chosen_exe_dir(game) for game in sorted(found, key=lambda game: game.name.casefold())]
         existing = {game.install_dir.resolve() for game in self.games}
         # A folder added by hand before Heroic or Lutris listed it shows once, as theirs.
         existing |= {game.exe_dir.resolve() for game in self.games if stores.store_name(game) and game.exe_dir}
         for path in self.settings.get("manual", []):
             directory = Path(path)
             if directory.is_dir() and directory.resolve() not in existing:
-                self.games.append(steam.SteamGame("", directory.name, directory, Path(), directory, directory))
+                self.games.append(self.chosen_exe_dir(
+                    steam.SteamGame("", directory.name, directory, Path(), directory, directory)))
         return self.games
+
+    def chosen_exe_dir(self, game):
+        """Use the folder of the executable chosen for this game while it is still inside the game."""
+        selected = self.settings.get("executables", {}).get(self.game_key(game))
+        if selected and not getattr(game, "library_ambiguous", False):
+            executable = Path(selected)
+            if executable.is_file() and executable.resolve().is_relative_to(game.install_dir.resolve()):
+                return replace(game, exe_dir=executable.resolve().parent)
+        return game
 
     @staticmethod
     def game_key(game):
@@ -238,6 +242,7 @@ class Controller:
         if (not executable.is_file() or executable.suffix.lower() != ".exe"
                 or not steam._x64_executable(executable)):
             raise ValueError("Choose the game's 64-bit Windows executable.")
+        executable = steam.unreal_game_executable(executable)
         if game.appid and not executable.is_relative_to(game.install_dir.resolve()):
             raise ValueError("Choose an executable inside this Steam game's installation.")
         if stores.store_name(game) and not executable.is_relative_to(game.install_dir.resolve()):
@@ -258,7 +263,7 @@ class Controller:
         if str(directory) not in manual:
             manual.append(str(directory))
         game = steam.SteamGame("", directory.name, directory, Path(), directory, directory)
-        self.settings.setdefault("executables", {})[self.game_key(game)] = str(executable)
+        self.settings.setdefault("executables", {})[self.game_key(game)] = str(steam.unreal_game_executable(executable))
         self.save_settings()
         return directory
 
