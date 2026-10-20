@@ -46,6 +46,9 @@ _missing = object()
 # Persistent ownership marker: retain its original bytes across branding changes.
 _backup_marker = b"NR Linux Manager original backups\n"
 _proxy_config = "amdnr-linux/proxy.json"
+# System32 files the wrapper journals (launch.py PREFIX_NAMES): the HIP bridge,
+# its lowercase name from earlier wrappers, and the shader compiler.
+_PREFIX_FILES = ("AMDHIP64_7.DLL", "amdhip64_7.dll", "d3dcompiler_47.dll")
 
 # Leftovers: what an installation leaves once no trusted record describes it.
 # Names follow what staging places and what the GPL host writes while a game
@@ -721,7 +724,7 @@ class LauncherBackend:
             for entry in entries:
                 path = Path(entry["path"])
                 if (not path.is_absolute() or path.parts[-4:-1] != ("drive_c", "windows", "system32") or
-                        path.name not in ("amdhip64_7.dll", "d3dcompiler_47.dll") or str(path) in seen):
+                        path.name not in _PREFIX_FILES or str(path) in seen):
                     raise ValueError("invalid prefix path")
                 seen.add(str(path))
                 if any(parent.is_symlink() for parent in path.parents) or path.is_symlink():
@@ -823,7 +826,7 @@ class LauncherBackend:
         for entry in journal["entries"]:
             path = Path(entry["path"])
             in_game = game in path.parents
-            prefix = path.parts[-4:-1] == ("drive_c", "windows", "system32") and path.name in ("amdhip64_7.dll", "d3dcompiler_47.dll")
+            prefix = path.parts[-4:-1] == ("drive_c", "windows", "system32") and path.name in _PREFIX_FILES
             saved_config = path == self.state_dir / "configs" / (self._key(game) + ".ini")
             receipt = path == self.state_dir / "game-receipts" / (self._key(game) + ".json")
             if not path.is_absolute() or not (in_game or prefix or saved_config or receipt) or any(parent.is_symlink() for parent in path.parents):
@@ -959,15 +962,23 @@ class LauncherBackend:
                     operations.append(self._operation(backup))
                 else:
                     operations.append(self._operation(target))
-            prefix_entries = self._prefix_entries(game)
-            for entry in prefix_entries:
+            journal = self._prefix_entries(game)
+            prefix_entries = []
+            for entry in journal:
                 path = Path(entry["path"])
-                source_name = "amdnr-linux/x86_64-windows/amdhip64_7.dll" if path.name == "amdhip64_7.dll" else "d3dcompiler_47.dll"
+                if path.name == "amdhip64_7.dll":
+                    # An earlier wrapper's lowercase bridge, which Proton-CachyOS deletes:
+                    # the wrapper installs AMDHIP64_7.DLL at the next launch instead.
+                    if path.exists():
+                        operations.append(self._operation(path))
+                    continue
+                source_name = "amdnr-linux/x86_64-windows/amdhip64_7.dll" if path.name == "AMDHIP64_7.DLL" else "d3dcompiler_47.dll"
                 info = candidate[source_name]
                 if not path.exists() or _sha(path) != info["sha256"]:
                     operations.append(self._operation(path, source=info["source"]))
                 entry["sha256"] = info["sha256"]
-            if prefix_entries:
+                prefix_entries.append(entry)
+            if journal:
                 operations.append(self._operation(self._safe(game, "amdnr-linux/prefixes.json"), data=_json_bytes(prefix_entries)))
             record = dict(version=1, files=files, installed=[entry["path"] for entry in files],
                           launcher=dict(version=self.addon_version or self._version(package), addon_version=self.addon_version,
@@ -1365,7 +1376,7 @@ class LauncherBackend:
                 path = Path(entry["path"])
                 if (not path.is_absolute() or ".." in path.parts or str(path) != entry["path"] or
                         path.parts[-4:-1] != ("drive_c", "windows", "system32") or
-                        path.name not in ("amdhip64_7.dll", "d3dcompiler_47.dll") or
+                        path.name not in _PREFIX_FILES or
                         not re.fullmatch(r"[0-9a-f]{64}", entry["sha256"])):
                     raise ValueError("invalid prefix path")
                 if any(parent.is_symlink() for parent in path.parents):

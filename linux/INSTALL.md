@@ -318,6 +318,7 @@ and management, not a new neural model.
 | Game crashes or no neural frames appear | Check Proton version, GPU access and compiler; compare with `[DlssNr] Enabled=false` in `OptiScaler.ini`. |
 | Resident Evil Requiem stays black at startup | Check `re2_framework_log.txt`. If it ends at `Scanning DD2...` after suspending threads, see the REFramework note below. |
 | No AMDNR message or Insert menu | Confirm the selected folder matches the copy Steam launches, then Repair. Existing REFramework may use the same Insert key; change its menu key to Delete if both overlays open. |
+| Neural rendering toggles but the picture never changes; `amd_bridge.log` says `amdhip64_7.dll could not be loaded (Win32 error 126)` | The HIP bridge is missing from the prefix's `system32`. Proton-CachyOS deletes the name earlier releases used; Update or Repair the game so the wrapper stores it as `AMDHIP64_7.DLL`. |
 | Unreal Engine 4 game shows no AMDNR menu | Many UE4 games start in DX11. Add `-dx12` to the launch options, or add `[D3DRHIPreference]` with `bUseD3D12InGame=True` to the game's `Saved/Config/WindowsNoEditor/GameUserSettings.ini`. |
 | Need diagnostic files | Use Save logs. The export includes installation health, wrapper errors and available startup logs, even if the host never loaded. Review personal paths before sharing; nothing is sent automatically. |
 

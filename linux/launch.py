@@ -12,6 +12,14 @@ import fcntl
 import tempfile
 from proxies import read_config
 
+# Proton-CachyOS deletes system32/amdhip64_7.dll on every start unless its ZLUDA
+# mode is on. Wine finds DLL files whatever their case, and Proton checks only
+# the lowercase name, so the bridge goes into System32 under this name.
+PREFIX_HIP = "AMDHIP64_7.DLL"
+# Earlier wrappers used the lowercase name; their journal entries are retired.
+LEGACY_PREFIX_HIP = "amdhip64_7.dll"
+PREFIX_NAMES = (PREFIX_HIP, LEGACY_PREFIX_HIP, "d3dcompiler_47.dll")
+
 def launch_status(bundle, message):
     """Keep the last wrapper result when Steam hides its terminal output."""
     try:
@@ -51,7 +59,7 @@ def _prefix_entries(record):
             path = Path(entry["path"])
             if (not path.is_absolute() or ".." in path.parts or "\0" in entry["path"] or str(path) != entry["path"] or
                     path.parts[-4:-1] != ("drive_c", "windows", "system32") or
-                    path.name not in ("amdhip64_7.dll", "d3dcompiler_47.dll") or str(path) in seen or
+                    path.name not in PREFIX_NAMES or str(path) in seen or
                     not re.fullmatch(r"[0-9a-f]{64}", entry["sha256"])):
                 raise ValueError()
             seen.add(str(path))
@@ -76,15 +84,46 @@ def _check_prefix_parents(path):
     if any(parent.is_symlink() for parent in path.parents):
         raise ValueError(f"Prefix file parent became a symlink: {path}")
 
+def _retire_legacy_hip(record, entries, legacy, current, expected):
+    """Remove the lowercase bridge an earlier wrapper installed, and its entry.
+
+    Wine loads the exact-case name first, so a different HIP DLL under the
+    lowercase name would hide the bridge and is refused. A copy identical to
+    this bridge belongs to another installation sharing the prefix and stays.
+    """
+    _check_prefix_parents(legacy)
+    entry = next((entry for entry in entries if entry["path"] == str(legacy)), None)
+    if entry is not None and ("backup" in entry or "original_link" in entry):
+        raise ValueError(f"Invalid prefix ownership record: {record}. Preserve it for recovery.")
+    regular = legacy.is_file() and not legacy.is_symlink()
+    # A case-insensitive folder shows one file under both names.
+    same = regular and current.is_file() and not current.is_symlink() and legacy.samefile(current)
+    present = (legacy.exists() or legacy.is_symlink()) and not same
+    ours = present and regular and entry is not None and sha(legacy) == entry["sha256"]
+    if present and not ours and not (regular and sha(legacy) == expected):
+        raise ValueError(f"A different HIP DLL is already installed: {legacy}")
+    if ours:
+        legacy.unlink()
+    if entry is not None:
+        entries = [item for item in entries if item is not entry]
+        if same and not any(item["path"] == str(current) for item in entries):
+            entries.append(dict(entry, path=str(current)))  # still this installation's file
+        _write_record(record, entries)
+    return entries
+
 def _prepare_prefix(bundle, prefix):
     record = bundle / "prefixes.json"
     entries = _prefix_entries(record)
-    sources = [bundle / "x86_64-windows/amdhip64_7.dll", bundle.parent / "d3dcompiler_47.dll"]
-    for source in sources:
+    sources = [(bundle / "x86_64-windows/amdhip64_7.dll", PREFIX_HIP),
+               (bundle.parent / "d3dcompiler_47.dll", "d3dcompiler_47.dll")]
+    for source, _ in sources:
         if not source.is_file():
             raise ValueError(f"Missing prefix support file: {source}")
-    for source in sources:
-        destination = prefix / "drive_c/windows/system32" / source.name
+    system32 = prefix / "drive_c/windows/system32"
+    entries = _retire_legacy_hip(record, entries, system32 / LEGACY_PREFIX_HIP, system32 / PREFIX_HIP,
+                                 sha(sources[0][0]))
+    for source, name in sources:
+        destination = system32 / name
         _check_prefix_parents(destination)
         destination.parent.mkdir(parents=True, exist_ok=True)
         expected = sha(source)
@@ -107,7 +146,7 @@ def _prepare_prefix(bundle, prefix):
         else:
             if destination.is_file() and sha(destination) == expected:
                 continue
-            if source.name == "amdhip64_7.dll" and (destination.exists() or destination.is_symlink()):
+            if name == PREFIX_HIP and (destination.exists() or destination.is_symlink()):
                 raise ValueError(f"A different HIP DLL is already installed: {destination}")
             entry = {"path": str(destination), "sha256": expected}
             # The host compiles its shaders through an absolute System32 path.

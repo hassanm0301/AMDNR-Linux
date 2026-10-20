@@ -103,7 +103,7 @@ class ProxyLaunchTests(unittest.TestCase):
         self.assertEqual(effective["dinput8"], "n,b")
         self.assertEqual(captured["env"]["AMDNR_HIP_LIBRARY"], str(self.bundle / "rocm/lib/libamdhip64.so.7"))
         self.assertEqual(captured["env"]["LD_PRELOAD"], "libamdnr_signal_guard.so")
-        self.assertTrue((self.prefix / "drive_c/windows/system32/amdhip64_7.dll").is_file())
+        self.assertTrue((self.prefix / "drive_c/windows/system32/AMDHIP64_7.DLL").is_file())
 
     def test_missing_proxy_configuration_preserves_legacy_winmm_behavior(self):
         result = self.invoke("legacy installation")

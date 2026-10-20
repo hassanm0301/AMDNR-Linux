@@ -203,7 +203,7 @@ class PackageTests(unittest.TestCase):
         prefix = self.root / "test prefix"
         launch.prepare_prefix(bundle, prefix)
         launch.prepare_prefix(bundle, prefix)
-        dll = prefix / "drive_c/windows/system32/amdhip64_7.dll"
+        dll = prefix / "drive_c/windows/system32/AMDHIP64_7.DLL"
         self.assertTrue(dll.exists())
         manage.uninstall(self.game)
         self.assertFalse(dll.exists())
@@ -226,7 +226,7 @@ class PackageTests(unittest.TestCase):
         self.assertEqual((bundle / "prefixes.json").read_bytes(), journal)
         self.assertEqual({path.name: path.read_bytes() for path in (bundle / "prefix-backups").iterdir()}, backups)
         self.assertEqual(compiler.read_bytes(), b"native compiler")
-        self.assertTrue(compiler.with_name("amdhip64_7.dll").is_file())
+        self.assertTrue(compiler.with_name("AMDHIP64_7.DLL").is_file())
         self.assertEqual((self.game / "d3d12.dll").read_bytes(), b"original mod")
         self.assertFalse((self.game / manage.RECORD).exists())
         self.assertFalse((self.game / manage.BACKUP).exists())
@@ -252,13 +252,80 @@ class PackageTests(unittest.TestCase):
                     state.unlink()
 
     def test_existing_prefix_dll_is_not_overwritten(self):
-        prefix = self.root / "test prefix"
-        dll = prefix / "drive_c/windows/system32/amdhip64_7.dll"
-        dll.parent.mkdir(parents=True)
-        dll.write_bytes(b"unrelated Windows runtime")
-        with self.assertRaisesRegex(ValueError, "different HIP DLL"):
-            launch.prepare_prefix(self.bundle, prefix)
-        self.assertEqual(dll.read_bytes(), b"unrelated Windows runtime")
+        # Wine loads the exact-case name first, so a lowercase one would hide the bridge.
+        for name in ("AMDHIP64_7.DLL", "amdhip64_7.dll"):
+            with self.subTest(name=name):
+                prefix = self.root / ("test prefix " + name)
+                dll = prefix / "drive_c/windows/system32" / name
+                dll.parent.mkdir(parents=True)
+                dll.write_bytes(b"unrelated Windows runtime")
+                with self.assertRaisesRegex(ValueError, "different HIP DLL"):
+                    launch.prepare_prefix(self.bundle, prefix)
+                self.assertEqual(dll.read_bytes(), b"unrelated Windows runtime")
+                self.assertEqual([path.name for path in dll.parent.iterdir()], [name])
+                self.assertFalse((self.bundle / "prefixes.json").exists())
+
+    def test_hip_bridge_avoids_the_name_proton_cachyos_deletes(self):
+        prefix = self.root / "prefix"
+        launch.prepare_prefix(self.bundle, prefix)
+        system32 = prefix / "drive_c/windows/system32"
+        # Proton-CachyOS unlinks exactly this path on every start unless ZLUDA is on.
+        self.assertFalse(os.path.lexists(system32 / "amdhip64_7.dll"))
+        self.assertEqual((system32 / "AMDHIP64_7.DLL").read_bytes(), b"test placeholder")
+        launch.restore_prefixes(self.bundle)
+        self.assertEqual(list(system32.iterdir()), [])
+
+    def legacy_prefix(self, prefix, bridge=b"test placeholder"):
+        """Prefix state an earlier wrapper left: the bridge journalled under the lowercase name."""
+        launch.prepare_prefix(self.bundle, prefix)
+        system32 = prefix / "drive_c/windows/system32"
+        (system32 / "AMDHIP64_7.DLL").rename(system32 / "amdhip64_7.dll")
+        (system32 / "amdhip64_7.dll").write_bytes(bridge)
+        record = self.bundle / "prefixes.json"
+        entries = json.loads(record.read_text())
+        for entry in entries:
+            if entry["path"] == str(system32 / "AMDHIP64_7.DLL"):
+                entry.update(path=str(system32 / "amdhip64_7.dll"), sha256=launch.sha(system32 / "amdhip64_7.dll"))
+        record.write_text(json.dumps(entries))
+        return system32
+
+    def test_earlier_lowercase_bridge_moves_to_the_new_name(self):
+        for state in ("present", "deleted by Proton", "older bridge"):
+            with self.subTest(state=state):
+                prefix = self.root / ("prefix " + state)
+                system32 = self.legacy_prefix(prefix, b"older bridge" if state == "older bridge" else b"test placeholder")
+                if state == "deleted by Proton":
+                    (system32 / "amdhip64_7.dll").unlink()
+                launch.prepare_prefix(self.bundle, prefix)
+                self.assertFalse(os.path.lexists(system32 / "amdhip64_7.dll"))
+                self.assertEqual((system32 / "AMDHIP64_7.DLL").read_bytes(), b"test placeholder")
+                entries = json.loads((self.bundle / "prefixes.json").read_text())
+                self.assertEqual(sorted(Path(entry["path"]).name for entry in entries),
+                                 ["AMDHIP64_7.DLL", "d3dcompiler_47.dll"])
+                launch.restore_prefixes(self.bundle)
+                self.assertEqual(list(system32.iterdir()), [])
+
+    def test_identical_lowercase_bridge_of_another_install_is_left_alone(self):
+        prefix = self.root / "shared prefix"
+        other = prefix / "drive_c/windows/system32/amdhip64_7.dll"
+        other.parent.mkdir(parents=True)
+        other.write_bytes(b"test placeholder")
+        launch.prepare_prefix(self.bundle, prefix)
+        self.assertTrue(other.with_name("AMDHIP64_7.DLL").is_file())
+        launch.restore_prefixes(self.bundle)
+        self.assertEqual([path.name for path in other.parent.iterdir()], ["amdhip64_7.dll"])
+
+    def test_case_insensitive_folder_keeps_the_bridge_journalled(self):
+        prefix = self.root / "casefolded prefix"
+        system32 = self.legacy_prefix(prefix)
+        # A casefolded folder shows one file under both names; a hard link stands in for that.
+        os.link(system32 / "amdhip64_7.dll", system32 / "AMDHIP64_7.DLL")
+        launch.prepare_prefix(self.bundle, prefix)
+        self.assertEqual((system32 / "AMDHIP64_7.DLL").read_bytes(), b"test placeholder")
+        entries = json.loads((self.bundle / "prefixes.json").read_text())
+        self.assertEqual(sorted(Path(entry["path"]).name for entry in entries), ["AMDHIP64_7.DLL", "d3dcompiler_47.dll"])
+        launch.restore_prefixes(self.bundle)
+        self.assertFalse((system32 / "AMDHIP64_7.DLL").exists())
 
     def test_prefix_compiler_restored_including_symlinks(self):
         prefix = self.root / "prefix"
@@ -318,7 +385,7 @@ class PackageTests(unittest.TestCase):
     def test_missing_owned_prefix_file_is_recreated_but_modified_file_is_preserved(self):
         prefix = self.root / 'prefix'
         launch.prepare_prefix(self.bundle, prefix)
-        dll = prefix / 'drive_c/windows/system32/amdhip64_7.dll'
+        dll = prefix / 'drive_c/windows/system32/AMDHIP64_7.DLL'
         dll.unlink()
         launch.prepare_prefix(self.bundle, prefix)
         self.assertEqual(dll.read_bytes(), b'test placeholder')
@@ -333,7 +400,7 @@ class PackageTests(unittest.TestCase):
             with self.assertRaisesRegex(OSError, 'copy failed'):
                 launch.prepare_prefix(self.bundle, prefix)
         launch.prepare_prefix(self.bundle, prefix)
-        dll = prefix / 'drive_c/windows/system32/amdhip64_7.dll'
+        dll = prefix / 'drive_c/windows/system32/AMDHIP64_7.DLL'
         self.assertEqual(dll.read_bytes(), b'test placeholder')
         launch.restore_prefixes(self.bundle)
         self.assertFalse(dll.exists())

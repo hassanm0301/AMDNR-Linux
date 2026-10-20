@@ -243,7 +243,10 @@ do both when `run.sh` is their wrapper or command prefix: Heroic passes
 At first launch the wrapper installs the PE HIP bridge and the supplied
 native shader compiler into that prefix's `system32`. It backs up the old compiler
 (including symlinks), journals changes in `amdnr-linux/prefixes.json`, and refuses
-to overwrite an unrelated HIP DLL. Native DXVK DXGI must remain enabled: Wine's
+to overwrite an unrelated HIP DLL. The bridge is stored as `AMDHIP64_7.DLL`:
+Proton-CachyOS deletes `system32/amdhip64_7.dll` on every start unless its ZLUDA
+mode is on, and Wine finds the file whatever its case. A lowercase bridge left by
+an earlier wrapper is removed at the next launch, Update or Repair. Native DXVK DXGI must remain enabled: Wine's
 builtin DXGI is incompatible with the vkd3d-proton device used here.
 
 Enable the game's supported upscaler so OptiScaler receives its frames. The

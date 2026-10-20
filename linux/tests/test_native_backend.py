@@ -530,11 +530,39 @@ class BackendTests(unittest.TestCase):
         backups = snapshot(self.game / "amdnr-linux/prefix-backups")
         self.backend.update(self.game, self.b)
         self.assertEqual(compiler.read_bytes(), b"B d3dcompiler_47.dll")
-        self.assertEqual((compiler.parent / "amdhip64_7.dll").read_bytes(), b"B amdnr-linux/x86_64-windows/amdhip64_7.dll")
+        self.assertEqual((compiler.parent / "AMDHIP64_7.DLL").read_bytes(), b"B amdnr-linux/x86_64-windows/amdhip64_7.dll")
         self.assertEqual(snapshot(self.game / "amdnr-linux/prefix-backups"), backups)
         self.backend.uninstall(self.game)
         self.assertEqual(compiler.read_bytes(), b"original prefix compiler")
-        self.assertFalse((compiler.parent / "amdhip64_7.dll").exists())
+        self.assertFalse((compiler.parent / "AMDHIP64_7.DLL").exists())
+
+    def test_update_retires_the_lowercase_bridge_of_an_earlier_wrapper(self):
+        for deleted_by_proton in (False, True):
+            with self.subTest(deleted_by_proton=deleted_by_proton):
+                self.backend.install(self.game, self.a)
+                prefix, compiler = self.prefix()
+                system32 = compiler.parent
+                (system32 / "AMDHIP64_7.DLL").rename(system32 / "amdhip64_7.dll")
+                journal = self.game / "amdnr-linux/prefixes.json"
+                entries = json.loads(journal.read_text())
+                for entry in entries:
+                    if Path(entry["path"]).name == "AMDHIP64_7.DLL":
+                        entry["path"] = str(system32 / "amdhip64_7.dll")
+                journal.write_text(json.dumps(entries))
+                if deleted_by_proton:
+                    (system32 / "amdhip64_7.dll").unlink()
+                self.backend.update(self.game, self.b)
+                self.assertFalse(os.path.lexists(system32 / "amdhip64_7.dll"))
+                self.assertEqual([Path(entry["path"]).name for entry in json.loads(journal.read_text())],
+                                 ["d3dcompiler_47.dll"])
+                self.assertEqual(compiler.read_bytes(), b"B d3dcompiler_47.dll")
+                # The next launch installs the bridge under the new name.
+                self.backend.launch.prepare_prefix(self.game / "amdnr-linux", prefix)
+                self.assertEqual((system32 / "AMDHIP64_7.DLL").read_bytes(), b"B amdnr-linux/x86_64-windows/amdhip64_7.dll")
+                self.backend.uninstall(self.game)
+                self.assertEqual(compiler.read_bytes(), b"original prefix compiler")
+                self.assertEqual([path.name for path in system32.iterdir()], ["d3dcompiler_47.dll"])
+                shutil.rmtree(prefix)
 
     def test_modified_prefix_is_not_overwritten(self):
         self.backend.install(self.game, self.a)
@@ -794,7 +822,7 @@ class BackendTests(unittest.TestCase):
         self.assertIn("Original backups exist without an installation record.", result["conflicts"])
         plan = result["leftovers"]
         self.assertEqual(sorted(plan["restore"]), ["OptiScaler.ini", "d3d12.dll"])
-        self.assertEqual(sorted(Path(item["path"]).name for item in plan["prefix"]), ["amdhip64_7.dll", "d3dcompiler_47.dll"])
+        self.assertEqual(sorted(Path(item["path"]).name for item in plan["prefix"]), ["AMDHIP64_7.DLL", "d3dcompiler_47.dll"])
         self.assertTrue(plan["save_config"])
         for name in ("winmm.dll", "d3d12core.dll", "d3dcompiler_47.dll", "LmxxfNrRuntime.pak",
                      "OptiScaler/libxess.dll", "OptiScaler/D3D12_OptiScaler/D3D12Core.dll", "Licenses/AMDNR_NOTICE.txt",
@@ -805,7 +833,7 @@ class BackendTests(unittest.TestCase):
         self.backend.clean(self.game)
         self.assertEqual(snapshot(self.game), {**self.initial, "AMDNR-report-Game-20261019.zip": ("file", b"PK report")})
         self.assertEqual(compiler.read_bytes(), b"original prefix compiler")
-        self.assertFalse((compiler.parent / "amdhip64_7.dll").exists())
+        self.assertFalse((compiler.parent / "AMDHIP64_7.DLL").exists())
         saved = Path(self.backend.diagnostics(self.game)["saved_settings"])
         self.assertEqual(saved.read_bytes(), b"; AMDNR settings the player changed\n")
         self.assertTrue(self.backend.install(self.game, self.a)["installed"])
@@ -816,11 +844,11 @@ class BackendTests(unittest.TestCase):
         compiler.write_bytes(b"Proton's newer compiler")
         (self.game / self.backend.manage.RECORD).unlink()
         plan = self.backend.leftovers(self.game)
-        self.assertEqual([Path(item["path"]).name for item in plan["prefix"]], ["amdhip64_7.dll"])
+        self.assertEqual([Path(item["path"]).name for item in plan["prefix"]], ["AMDHIP64_7.DLL"])
         self.assertIn(str(compiler), [item["path"] for item in plan["kept"]])
         self.backend.clean(self.game)
         self.assertEqual(compiler.read_bytes(), b"Proton's newer compiler")
-        self.assertFalse((compiler.parent / "amdhip64_7.dll").exists())
+        self.assertFalse((compiler.parent / "AMDHIP64_7.DLL").exists())
         # A deleted prefix is not created again.
         self.backend.install(self.game, self.a)
         self.backend.launch.prepare_prefix(self.game / "amdnr-linux", prefix)
