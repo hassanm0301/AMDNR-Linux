@@ -336,7 +336,9 @@ def clean(game, assume_yes=False):
                          ("Put back original", plan["restore"]),
                          ("Put back original prefix file", [item["path"] for item in plan["prefix"]]),
                          ("Delete linked file", [f"{target} (the link {name} points to it)"
-                                                 for name, target in plan["linked"].items()])):
+                                                 for name, target in plan["linked"].items()]),
+                         ("Delete mod manager copy", [f"{copy} (a copy of {name} the mod manager would link back)"
+                                                      for copy, name in plan["copies"].items()])):
         for item in items:
             print(f"{label}: {item}")
     for item in plan["kept"]:

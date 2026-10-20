@@ -528,9 +528,15 @@ class Window(QMainWindow):
             text += " Original files it replaced are still in its backups."
         linked = self.linked_folders()
         if linked:
-            count = sum(linked.values())
+            count = sum(links for links, _ in linked.values())
             text += (f" {count} {'are links' if count != 1 else 'is a link'} to AMDNR files in "
                      f"{' and '.join(linked)}, probably a mod manager's folder; those files are removed too.")
+            count = sum(copies for _, copies in linked.values())
+            if count:
+                text += (f" {'That folder also holds' if len(linked) == 1 else 'Those folders also hold'} "
+                         + (f"copies of {count} other files listed" if count != 1 else "a copy of another file listed")
+                         + ", which the mod manager would link back; "
+                         + ("they are removed too." if count != 1 else "it is removed too."))
         text += " Remove leftover AMDNR files lists every change before it starts."
         if found.get("steam_wrapper"):
             text += "\nSteam's launch options still start this game through the AMDNR wrapper."
@@ -539,13 +545,19 @@ class Window(QMainWindow):
         return text
 
     def linked_folders(self):
-        """{folder: count} of the AMDNR files leftover links point to, by the folder mirroring the game's."""
+        """{folder: (links, copies)} for the AMDNR files outside the game folder, by the folder mirroring the game's.
+
+        links counts the files leftover links point to, copies the other listed
+        files that folder holds copies of.
+        """
         found = self.inspection.get("leftovers") or {}
+        outside = [(target, name, 0) for name, target in (found.get("linked") or {}).items()]
+        outside += [(copy, name, 1) for copy, name in (found.get("copies") or {}).items()]
         folders = {}
-        for name, target in (found.get("linked") or {}).items():
-            folder = str(Path(target).parents[len(PurePosixPath(name).parts) - 1])
-            folders[folder] = folders.get(folder, 0) + 1
-        return dict(sorted(folders.items()))
+        for path, name, kind in outside:
+            folder = str(Path(path).parents[len(PurePosixPath(name).parts) - 1])
+            folders.setdefault(folder, [0, 0])[kind] += 1
+        return {folder: tuple(counts) for folder, counts in sorted(folders.items())}
 
     def confirm_clean(self):
         found = self.inspection.get("leftovers") or {}
@@ -554,8 +566,13 @@ class Window(QMainWindow):
             top, _, rest = name.partition("/")
             groups.setdefault(top + "/" if rest else top, []).append(name)
         # Files outside the game folder come first, so the list never cuts them off.
-        items = [f"Delete the {count} AMDNR file{'s' if count != 1 else ''} the links below point to, in {folder}"
-                 for folder, count in self.linked_folders().items()]
+        items = []
+        for folder, (links, copies) in self.linked_folders().items():
+            if links:
+                items.append(f"Delete the {links} AMDNR file{'s' if links != 1 else ''} the links below point to, in {folder}")
+            if copies:
+                items.append((f"Delete the {copies} copies of files" if copies != 1 else "Delete the copy of a file")
+                             + f" below that {folder} keeps for the mod manager to link back")
         items += [f"Remove {key} ({len(names)} file{'s' if len(names) != 1 else ''})" if key.endswith("/")
                   else f"Remove {key}" for key, names in groups.items()]
         items += [f"Remove the empty {name}/ folder" for name in found.get("folders") or ()]

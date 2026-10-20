@@ -239,9 +239,11 @@ Close the game and Steam before using the selected game’s actions:
   link together with the file it points to, so the mod manager has nothing to
   put back. It does this only for a link to a file with the same relative path in
   the other folder that passes the same checks; the list names that folder. Other
-  links stay. A copy in that folder of a file that is not linked from the game
-  folder stays too; delete it there, or let the mod manager link it again and
-  repeat the cleanup.
+  links stay. That folder can also hold a copy of a file that is still an
+  ordinary file in the game folder, which the mod manager would link back on its
+  next deploy. Such a copy is deleted in the same pass when it has the same
+  relative path and passes the same checks as the game file; one cleanup is
+  enough. Copies in a folder no AMDNR link points into stay.
 
 A failed or interrupted operation retains recovery information. With the game
 and Steam closed, repeat the action to recover it before continuing. If a file,
