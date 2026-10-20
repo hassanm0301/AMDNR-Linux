@@ -424,6 +424,29 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(result["status"], "conflict")
         self.assertTrue(any("modified outside" in issue for issue in result["conflicts"]))
 
+    def test_last_wrapper_failure_is_reported_until_the_installation_changes(self):
+        self.backend.install(self.game, self.a)
+        self.assertIsNone(self.backend.inspect(self.game)["launch_failure"])
+        log = self.game / "amdnr-linux/launch.log"
+        log.write_text("2026-10-21T08:12:00+00:00\nLaunch setup failed: A different HIP DLL is already installed: "
+                       "/prefix/drive_c/windows/system32/amdhip64_7.dll\n")
+        result = self.backend.inspect(self.game)
+        self.assertEqual(result["launch_failure"], dict(
+            time="2026-10-21T08:12:00+00:00",
+            message="A different HIP DLL is already installed: /prefix/drive_c/windows/system32/amdhip64_7.dll"))
+        self.assertEqual(result["installation_health"], "healthy")  # Repair would not change the prefix.
+        # A failure from before the last Install, Repair or Update may no longer apply.
+        record = (self.game / self.backend.manage.RECORD).stat().st_mtime_ns
+        os.utime(log, ns=(record - 10**9, record - 10**9))
+        self.assertIsNone(self.backend.inspect(self.game)["launch_failure"])
+        log.write_text("2026-10-21T08:15:00+00:00\nWrapper prepared. Handing control to the game runner.\n")
+        self.assertIsNone(self.backend.inspect(self.game)["launch_failure"])
+        log.unlink()
+        outside = self.root / "outside launch.log"
+        outside.write_text("2026-10-21T08:12:00+00:00\nLaunch setup failed: not this game's\n")
+        log.symlink_to(outside)
+        self.assertIsNone(self.backend.inspect(self.game)["launch_failure"])
+
     def test_startup_diagnostics_are_bounded_historical_and_do_not_follow_links(self):
         self.backend.install(self.game, self.a)
         empty = self.backend.diagnostics(self.game)

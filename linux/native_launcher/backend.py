@@ -493,7 +493,8 @@ class LauncherBackend:
                       runtime_status="unverified", components=None, ini_runtime=None,
                       proxy_name=None, proxy_history=[], proxy_options=[], proxy_next=None,
                       proxy_switch_supported=False, proxy_switch_issue=None,
-                      running=self._running(game), recovery_needed=(self._transaction_dir(game) / "journal.json").exists())
+                      running=self._running(game), recovery_needed=(self._transaction_dir(game) / "journal.json").exists(),
+                      launch_failure=None)
         try:
             record = self._record(game)
             if record:
@@ -523,6 +524,7 @@ class LauncherBackend:
                         elif entry.get("backup_sha256") and _sha(backup) != entry["backup_sha256"]:
                             result["conflicts"].append(f"Original backup was modified: {entry['path']}")
                 self._inspect_launch_support(game, result)
+                result["launch_failure"] = self._launch_failure(game)
                 if result["missing"] or result["modified"] or result["health_issues"]:
                     result["status"] = "needs_repair"
             elif (game / self.manage.BACKUP).exists():
@@ -578,6 +580,30 @@ class LauncherBackend:
         for entry in self._prefix_entries(game):
             if not Path(entry["path"]).is_file():
                 result["health_issues"].append(f"A managed Proton prefix file is missing: {entry['path']}. Repair the installation.")
+
+    def _launch_failure(self, game):
+        """The wrapper's error when the last launch since Install, Repair or Update stopped before the game.
+
+        Steam hides the wrapper's output, so launch.log is the only trace of it.
+        """
+        try:
+            descriptor = os.open(self._safe(game, "amdnr-linux/launch.log"), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except (OSError, ValueError, ConflictError):
+            return None
+        with os.fdopen(descriptor, "rb") as source:
+            info = os.fstat(source.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_size > 16384:
+                return None
+            text = source.read(16384).decode("utf-8", errors="replace")
+        try:
+            if info.st_mtime_ns < self._safe(game, self.manage.RECORD).stat().st_mtime_ns:
+                return None  # written before the installation was last changed
+        except (OSError, ValueError, ConflictError):
+            return None
+        written, _, message = text.partition("\n")
+        if not message.startswith("Launch setup failed: "):
+            return None
+        return dict(time=written.strip(), message=message.removeprefix("Launch setup failed: ").strip())
 
     def _find_compiler(self, supplied, roots):
         if supplied is not None:
