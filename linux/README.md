@@ -250,7 +250,10 @@ an earlier wrapper is removed at the next launch, Update or Repair. If a game
 folder was deleted without Uninstall, its journal is gone but its bridge stays in
 the prefix; the wrapper recognises the bridges of published releases, renames
 such a file to `<name>.<hash>.bak` beside it and notes that in
-`amdnr-linux/launch.log`. Native DXVK DXGI must remain enabled: Wine's
+`amdnr-linux/launch.log`. A prefix holds one bridge, so when two games share a
+prefix, the newer one's wrapper sets the other's aside the same way. The manager
+then asks to Update the other game, which gives both the same bridge, and
+Uninstall leaves the bridge the other game uses. Native DXVK DXGI must remain enabled: Wine's
 builtin DXGI is incompatible with the vkd3d-proton device used here.
 
 Enable the game's supported upscaler so OptiScaler receives its frames. The

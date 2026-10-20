@@ -1039,10 +1039,15 @@ class Window(QMainWindow):
         elif result.get("installed"):
             damaged = len(result.get("missing", [])) + len(result.get("modified", []))
             health_issues = result.get("health_issues", [])
-            self.status.setText("Repair recommended" if damaged or health_issues else "Installed · Files verified")
+            # Update also restores damaged files; Repair needs the game to have this launcher's release.
+            update = result.get("update_needed")
+            self.status.setText("Update recommended" if update else
+                                "Repair recommended" if damaged or health_issues else "Installed · Files verified")
             if damaged or health_issues:
                 details = ([f"{damaged} managed files need attention."] if damaged else []) + health_issues
-                self.description.setText("\n".join(details) + "\nRepair restores the installation and keeps your configuration.")
+                self.description.setText("\n".join(details) + (
+                    "\nUpdate installs the current release and keeps your configuration." if update else
+                    "\nRepair restores the installation and keeps your configuration."))
             else:
                 self.description.setText("Enable DLSS, FSR or XeSS in the game. Insert opens OptiScaler; Home toggles neural rendering.")
         elif self.leftover_count():

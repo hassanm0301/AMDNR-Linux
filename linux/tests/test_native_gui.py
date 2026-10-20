@@ -34,6 +34,7 @@ class FakeController:
         self.operations = []
         self.conflicts = []
         self.health_issues = []
+        self.update_needed = False
         self.missing = []
         self.modified = []
         self.pending = False
@@ -53,7 +54,7 @@ class FakeController:
         options = [{"name": name, "available": name not in self.occupied_proxies,
                     "current": self.installed and name == self.proxy} for name in SUPPORTED]
         result = dict(installed=self.installed, modified=self.modified, missing=self.missing, conflicts=self.conflicts,
-                      health_issues=self.health_issues, runtime_status="unverified",
+                      health_issues=self.health_issues, update_needed=self.update_needed, runtime_status="unverified",
                       proxy_switch_supported=self.installed, proxy_switch_issue=None,
                       proxy_name=self.proxy if self.installed else None, proxy_history=list(self.proxy_history),
                       proxy_options=options, proxy_next=next((name for name in SUPPORTED
@@ -361,6 +362,19 @@ class GuiTests(unittest.TestCase):
         self.wait_idle()
         self.assertTrue(self.window.launch.isEnabled())
         self.assertIn("Files verified", self.window.status.text())
+
+    def test_a_bridge_another_installation_replaced_recommends_update(self):
+        self.controller.installed = True
+        self.controller.update_needed = True
+        self.controller.health_issues = ["Another AMDNR installation in this Proton prefix replaced the HIP bridge with "
+                                         "its own: /prefix/AMDHIP64_7.DLL. Update this game so both use the current bridge."]
+        self.window.select_game(self.window.library.currentItem())
+        self.wait_idle()
+        self.assertEqual(self.window.status.text(), "Update recommended")
+        self.assertIn("Update installs the current release", self.window.description.text())
+        self.assertNotIn("Repair", self.window.description.text())
+        self.assertFalse(self.window.launch.isEnabled())
+        self.assertTrue(self.window.update.isEnabled())
 
     def test_damaged_managed_binaries_prevent_launch_until_repaired(self):
         self.controller.installed = True

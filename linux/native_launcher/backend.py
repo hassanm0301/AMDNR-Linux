@@ -49,6 +49,7 @@ _proxy_config = "amdnr-linux/proxy.json"
 # System32 files the wrapper journals (launch.py PREFIX_NAMES): the HIP bridge,
 # its lowercase name from earlier wrappers, and the shader compiler.
 _PREFIX_FILES = ("AMDHIP64_7.DLL", "amdhip64_7.dll", "d3dcompiler_47.dll")
+_PREFIX_BRIDGES = _PREFIX_FILES[:2]
 
 # Leftovers: what an installation leaves once no trusted record describes it.
 # Names follow what staging places and what the GPL host writes while a game
@@ -489,7 +490,7 @@ class LauncherBackend:
         game = self._game(game_dir)
         result = dict(game_dir=str(game), installed=False, status="not_installed", version=None, addon_version=None,
                       host_version=None, release_root=None,
-                      modified=[], missing=[], conflicts=[], health_issues=[], config_modified=False,
+                      modified=[], missing=[], conflicts=[], health_issues=[], update_needed=False, config_modified=False,
                       runtime_status="unverified", components=None, ini_runtime=None,
                       proxy_name=None, proxy_history=[], proxy_options=[], proxy_next=None,
                       proxy_switch_supported=False, proxy_switch_issue=None,
@@ -577,9 +578,16 @@ class LauncherBackend:
                         "The shared Python runtime is missing or cannot run. Repair using the complete launcher download.")
             except (UnicodeError, ValueError):
                 result["health_issues"].append("The shared Python runtime path is invalid. Repair the installation.")
-        for entry in self._prefix_entries(game):
+        entries, replaced = self._prefix_entries(game)
+        for entry in entries:
             if not Path(entry["path"]).is_file():
                 result["health_issues"].append(f"A managed Proton prefix file is missing: {entry['path']}. Repair the installation.")
+            elif entry["path"] in replaced:
+                # This game's wrapper stops the launch until its journal names the bridge in place.
+                result["update_needed"] = True
+                result["health_issues"].append(
+                    f"Another AMDNR installation in this Proton prefix replaced the HIP bridge with its own: "
+                    f"{entry['path']}. Update this game so both use the current bridge.")
 
     def _launch_failure(self, game):
         """The wrapper's error when the last launch since Install, Repair or Update stopped before the game.
@@ -741,10 +749,35 @@ class LauncherBackend:
             raise ConflictError("The prepared package has undeclared Model E files.")
         return components
 
-    def _prefix_entries(self, game):
+    def _known_bridges(self, candidate=None):
+        """The HIP bridges AMDNR Linux installs in System32, by SHA-256.
+
+        launch.py lists those of published releases. A launcher run from a
+        source checkout also knows its own build, and Update or Repair the
+        bridge it is about to install (`candidate`).
+        """
+        known = set(getattr(self.launch, "RELEASED_HIP", ()))
+        build = self.release_root / "linux/build/x86_64-windows/amdhip64_7.dll"
+        if build.is_file() and not build.is_symlink():
+            known.add(_sha(build))
+        if candidate:
+            known.add(candidate)
+        return known
+
+    def _prefix_entries(self, game, bridge=None):
+        """The Proton prefix files this installation's wrapper journals, and those another installation replaced.
+
+        A prefix holds one HIP bridge. Another game's wrapper in the same
+        prefix sets aside a released bridge it has no journal for and installs
+        its own, so a journalled bridge that now holds an AMDNR bridge (see
+        _known_bridges; `bridge` is the one about to be installed) is listed as
+        replaced: Update gives both games the same bridge. Any other change is
+        a conflict.
+        """
         journal = self._safe(game, "amdnr-linux/prefixes.json")
         if not journal.exists():
-            return []
+            return [], set()
+        known, replaced = None, set()
         try:
             entries = json.loads(journal.read_text())
             if not isinstance(entries, list):
@@ -760,8 +793,14 @@ class LauncherBackend:
                     raise ValueError(f"prefix ownership changed: {path}")
                 if not re.fullmatch(r"[0-9a-f]{64}", entry["sha256"]):
                     raise ValueError("invalid prefix checksum")
-                if path.exists() and (not path.is_file() or _sha(path) != entry["sha256"]):
-                    raise ValueError(f"prefix file modified outside this installation: {path}")
+                current = _sha(path) if path.is_file() else None
+                if path.exists() and current != entry["sha256"]:
+                    if known is None:
+                        known = self._known_bridges(bridge)
+                    if (path.name not in _PREFIX_BRIDGES or current not in known or
+                            "backup" in entry or "original_link" in entry):
+                        raise ValueError(f"prefix file modified outside this installation: {path}")
+                    replaced.add(str(path))
                 if "backup" in entry:
                     expected = hashlib.sha256(str(path).encode()).hexdigest() + ".dll"
                     if entry["backup"] != expected:
@@ -771,7 +810,7 @@ class LauncherBackend:
                         raise ValueError(f"missing or changed prefix backup: {backup}")
                 if "original_link" in entry and (not isinstance(entry["original_link"], str) or "backup" in entry):
                     raise ValueError("invalid original prefix link")
-            return entries
+            return entries, replaced
         except (KeyError, ValueError, TypeError) as error:
             raise ConflictError(f"Cannot update owned Proton prefix files: {error}") from error
 
@@ -1024,16 +1063,21 @@ class LauncherBackend:
                     operations.append(self._operation(backup))
                 else:
                     operations.append(self._operation(target))
-            journal = self._prefix_entries(game)
+            journal, replaced = self._prefix_entries(game, candidate["amdnr-linux/x86_64-windows/amdhip64_7.dll"]["sha256"])
             prefix_entries = []
             for entry in journal:
                 path = Path(entry["path"])
                 if path.name == "amdhip64_7.dll":
                     # An earlier wrapper's lowercase bridge, which Proton-CachyOS deletes:
                     # the wrapper installs AMDHIP64_7.DLL at the next launch instead.
-                    if path.exists():
+                    # Another installation's bridge there is its own.
+                    if path.exists() and str(path) not in replaced:
                         operations.append(self._operation(path))
                     continue
+                # A bridge another installation put here is replaced too. This launcher
+                # knows it, so it is no newer than the one this release installs (Repair
+                # needs this release installed already), and the other game's Update
+                # brings it to the same bridge.
                 source_name = "amdnr-linux/x86_64-windows/amdhip64_7.dll" if path.name == "AMDHIP64_7.DLL" else "d3dcompiler_47.dll"
                 info = candidate[source_name]
                 if not path.exists() or _sha(path) != info["sha256"]:
@@ -1196,8 +1240,11 @@ class LauncherBackend:
                     operations.append(self._operation(backup))
                 else:
                     operations.append(self._operation(target))
-            for entry in self._prefix_entries(game):
+            entries, replaced = self._prefix_entries(game)
+            for entry in entries:
                 path = Path(entry["path"])
+                if entry["path"] in replaced:
+                    continue  # another installation's bridge, still in use
                 if "original_link" in entry:
                     operations.append(self._operation(path, link=entry["original_link"]))
                 elif "backup" in entry:
@@ -1658,7 +1705,7 @@ class LauncherBackend:
         result.update(release_root=str(self.release_root), cache_dir=str(self.cache_dir),
                       state_dir=str(self.state_dir), saved_settings=str(self.state_dir / "configs" / (self._key(game) + ".ini")))
         try:
-            result["prefixes"] = [entry["path"] for entry in self._prefix_entries(game)]
+            result["prefixes"] = [entry["path"] for entry in self._prefix_entries(game)[0]]
         except (OSError, ValueError, ConflictError) as error:
             result["prefix_error"] = str(error)
         evidence, errors = self._startup_evidence(game)
