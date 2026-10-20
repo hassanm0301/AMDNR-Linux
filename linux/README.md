@@ -20,9 +20,9 @@ release (the folder containing `RELEASE-MANIFEST.json`), run:
 
 ```sh
 python3 linux/build-native-launcher.py \
-  --release-root /path/to/AMDNR-Linux-v0.3.1-preview \
-  --version 0.3.1-preview \
-  --output linux/build/AMDNR-Linux-Manager-v0.3.1-preview-x86_64.AppImage
+  --release-root /path/to/AMDNR-Linux-v0.3.2-preview \
+  --version 0.3.2-preview \
+  --output linux/build/AMDNR-Linux-Manager-v0.3.2-preview-x86_64.AppImage
 ```
 
 This packages the same Python, Qt, addon, notices and corresponding Qt source as
@@ -33,7 +33,7 @@ does not download an unpinned runtime. Building does not require FUSE. The exist
 stable builds require matching manifest and app versions.
 
 Make the resulting AppImage executable and open it. On systems without usable
-FUSE, run `./AMDNR-Linux-Manager-v0.3.1-preview-x86_64.AppImage --appimage-extract-and-run`.
+FUSE, run `./AMDNR-Linux-Manager-v0.3.2-preview-x86_64.AppImage --appimage-extract-and-run`.
 Host requirements remain glibc 2.34+, the GCC 11 C++ runtime, and an X11/Wayland
 desktop with graphics drivers. Settings, downloads and the persistent game Python
 runtime stay in the same user data/cache directories used by portable releases.

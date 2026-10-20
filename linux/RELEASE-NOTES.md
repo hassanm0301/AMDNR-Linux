@@ -1,3 +1,39 @@
+# Linux v0.3.2-preview — install-guide corrections
+
+Development **pre-release**. The manager, the AMDNR 0.3.5.6 host, Model E
+support, the Linux bridge and the patched graphics binaries are the same as in
+v0.3.1-preview; this release corrects the install guides and brings `main` up
+to date. No game has been played with 0.3.5.6 or Model E on Linux yet.
+
+## Changed
+
+- `INSTALL-CLI.md` still said that `setup.py` downloads AMDNR 0.3.5.5R4. It
+  has downloaded 0.3.5.6 since v0.3.1-preview; the guide and its `--archive`
+  example now name `AMDNR-v0.3.5.6.zip`.
+- Both install guides say that the recorded Stellar Blade run used AMDNR
+  0.3.5.5R4.
+- `main` now holds all of the preview work since v0.2.1 (danielblnc's runtime,
+  the pre-SR host, Heroic and Lutris, AMDNR 0.3.5.6 and Model E) and upstream
+  AMDNR's latest manifest.
+
+## Validation
+
+The complete GPU suite passed three times in a row on RX 9070 XT under
+Proton-Wineland 11.0 (2026-09-30) with the 0.3.5.6 package, on the same bridge
+and graphics binaries as v0.3.1-preview: the released host under its hooks; the
+720-frame NR-off/on host pipeline with lmxxf (597 fresh composed outputs in a
+599-frame reporting window, mean absolute RGB change 0.0256 from the NR-off
+image); a host run with danielblnc 0.6.0 (700, 717 and 712 passes completed, no
+timeouts); OptiPatcher 0.41 loading; and the Model E runs, where the host
+verified the receipt, HelixSR's network ran on all 720 frames and its output
+differed from FSR 3.1 on 16.6% of output channels. Model E was rebuilt here from
+a local copy of NVIDIA's DLSS 310.7.0 DLL and produced the same file as for
+v0.3.1-preview (SHA-256 `11ed21a5…`). The only skip is Wineland's known
+shared-fence rewind limitation. All 324 Linux unit tests pass.
+
+These are synthetic API and pipeline checks. No new game compatibility or
+long-duration gameplay stability is claimed.
+
 # Linux v0.3.1-preview — AMDNR 0.3.5.6 host and Model E
 
 Development **pre-release**. The manager and `setup.py` now install upstream
