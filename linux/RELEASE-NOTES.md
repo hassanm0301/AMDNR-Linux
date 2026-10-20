@@ -1,3 +1,58 @@
+# Linux v0.3.3-preview — remove AMDNR leftovers
+
+Development **pre-release**. The manager can now clean up after AMDNR in a game
+folder it does not see as installed. The AMDNR 0.3.5.6 host, Model E support,
+the Linux bridge and the patched graphics binaries are the same as in
+v0.3.2-preview. No game has been played with 0.3.5.6 or Model E on Linux yet.
+
+## Added
+
+- **Remove leftover AMDNR files.** Uninstall needs the installation record,
+  `.amdnr-linux-install.json`, so a folder without one had no way back to a
+  clean state: the host's logs, crash dumps and session markers stayed after an
+  uninstall, and a folder whose record was lost kept the whole installation,
+  with "Original backups exist without an installation record" or leftover
+  prefix state blocking a new install. When a game has no record, the manager
+  now shows **Remove leftover AMDNR files** in place of Uninstall, and
+  `manage.py clean` does the same from a terminal. Both list every change and
+  ask first.
+- Files are removed only on evidence: this addon's own folders, or AMDNR named
+  inside the host DLL, `OptiScaler.ini` or the host's logs. The patched
+  vkd3d-proton DLLs and the shader compiler go only beside this addon's own
+  traces. Originals in `.amdnr-linux-backup` and the Proton prefix journal are
+  put back (a prefix file changed since is left as it is, and a deleted prefix
+  is not recreated), and the AMDNR wrapper is taken out of Steam's launch
+  options, also when the manager has no record of setting them. Finished
+  `AMDNR-report-*.zip` reports, other OptiScaler builds, links such as a mod
+  manager's, and anything that cannot be attributed stay; the list says which
+  and why. Like Uninstall, the removal is one recoverable transaction and the
+  last `OptiScaler.ini` is kept in the manager's data folder.
+
+## Validation
+
+The complete GPU suite passed three times in a row on RX 9070 XT under
+Proton-Wineland 11.0 (2026-09-30) with the 0.3.5.6 package, on the same bridge
+and graphics binaries as v0.3.2-preview: the released host under its hooks; the
+720-frame NR-off/on host pipeline with lmxxf (597 fresh composed outputs in a
+599-frame reporting window in each run, mean absolute RGB change 0.0240–0.0258
+from the NR-off image); a host run with danielblnc 0.6.0 (717, 715 and 717
+passes completed, no timeouts); OptiPatcher 0.41 loading; and the Model E runs,
+where the host verified the receipt, HelixSR's network ran on all 720 frames and
+its output differed from FSR 3.1 on 16.6% of output channels. Model E was
+rebuilt here from a local copy of NVIDIA's DLSS 310.7.0 DLL and produced the
+same file as before (SHA-256 `11ed21a5…`). The only skip is Wineland's known
+shared-fence rewind limitation. All 337 Linux unit tests pass.
+
+The cleanup was also run on a real install of the 0.3.5.6 package whose record
+had been deleted: the game folder and the Proton prefix were byte-identical to
+their state before the install. On a copy of a real game folder's leftovers
+after an uninstall, it removed only AMDNR's logs, session marker and empty
+`OptiScaler` folder, leaving the game's own FidelityFX DLLs and a linked
+REFramework DLL alone.
+
+These are synthetic API and pipeline checks. No new game compatibility or
+long-duration gameplay stability is claimed.
+
 # Linux v0.3.2-preview — install-guide corrections
 
 Development **pre-release**. The manager, the AMDNR 0.3.5.6 host, Model E
