@@ -1,3 +1,80 @@
+# Linux v0.3.4-preview — Proton-CachyOS and Unreal launcher fixes
+
+Development **pre-release**. Neural rendering now starts under Proton-CachyOS,
+and Add game installs AMDNR beside the executable an Unreal game really runs.
+The game wrapper and the manager change; the AMDNR 0.3.5.6 host, Model E
+support, the Linux bridge and the patched graphics binaries are the same as in
+v0.3.3-preview. Both problems were found with BITS (Unreal Engine 4.27), a
+non-Steam game started through umu-run with Proton-CachyOS.
+
+## Fixed
+
+- **Neural rendering never started under Proton-CachyOS.** Proton-CachyOS
+  (seen in `cachyos-11.0-20261014`) deletes `system32/amdhip64_7.dll` from the
+  game's prefix on every start unless its ZLUDA mode is on. That is where the
+  AMDNR wrapper put the HIP bridge just before the game started, so the host
+  could never load HIP: the AMDNR menu opened and the neural rendering toggle
+  switched, but the picture never changed, and `amd_bridge.log` said
+  `amdhip64_7.dll could not be loaded (Win32 error 126)`. Steam and umu-run
+  launches were both affected. GE-Proton, Proton-Wineland, UMU-Proton and
+  Valve's Proton do not delete the file, so the old name kept working with
+  them.
+- The wrapper now stores the bridge as `AMDHIP64_7.DLL`. Proton-CachyOS checks
+  only the lowercase name, and Wine finds the file whatever its case, so games
+  still load it as `C:\windows\system32\amdhip64_7.dll`.
+- **Update or Repair each installed game** after updating the manager. The fix
+  is in the wrapper inside the game folder, and v0.3.2-preview and
+  v0.3.3-preview installations keep the old wrapper until then. Update and
+  Repair also remove the bridge the old wrapper left under the lowercase name,
+  and the new wrapper does the same at the next launch if a game still has it.
+  As before, the wrapper never overwrites a different HIP DLL under either
+  name; it stops and says so. With `manage.py`, uninstall the old package using
+  this release's `manage.py` and install the new one.
+- **Add game chose the wrong executable for Unreal games.** A packaged Unreal
+  game's root `Game.exe` only starts
+  `Game/Binaries/Win64/Game-Win64-Shipping.exe`. Add game took the root
+  executable as picked, so AMDNR went into the root folder, where the game never
+  loads it, and no AMDNR menu appeared. Add game and **Choose game executable**
+  now select the Shipping executable when exactly one matches the launcher's
+  name. Point your Proton/Wine runner at that executable too, so it finds
+  `amdnr-linux/run.sh` beside it. If an earlier release installed AMDNR in an
+  Unreal game's root folder, Uninstall it there, use Choose game executable,
+  then Install.
+- **A manual game forgot its chosen executable at the next rescan.** Choices
+  made with Choose game executable were kept for Steam, Heroic and Lutris games
+  only; a game added with Add game went back to the folder it was added from.
+  Manual games now keep theirs.
+
+## Changed
+
+- The install guide's troubleshooting table covers both problems, and notes
+  that many Unreal Engine 4 games start in DX11, where no AMDNR menu appears:
+  add `-dx12` to the launch options, or `[D3DRHIPreference]` with
+  `bUseD3D12InGame=True` to the game's `GameUserSettings.ini`.
+
+## Validation
+
+The complete GPU suite passed three times in a row on RX 9070 XT under
+Proton-Wineland 11.0 (2026-09-30) with the 0.3.5.6 package, on the same bridge
+and graphics binaries as v0.3.3-preview. The wrapper stored the bridge as
+`AMDHIP64_7.DLL` in each run, and the host loaded it as
+`C:\windows\system32\amdhip64_7.dll`. The runs covered the released host under
+its hooks; the 720-frame NR-off/on host pipeline with lmxxf (597 fresh composed
+outputs in a 599-frame reporting window in each run, mean absolute RGB change
+0.0256 from the NR-off image); a host run with danielblnc 0.6.0 (700, 700 and
+717 passes completed, no timeouts); OptiPatcher 0.41 loading; and the Model E
+runs, where the host verified the receipt, HelixSR's network ran on all 720
+frames and its output differed from FSR 3.1 on 16.6% of output channels. Model E
+was the same build as for v0.3.3-preview (SHA-256 `11ed21a5…`). The only skip is
+Wineland's known shared-fence rewind limitation. All 344 Linux unit tests pass.
+
+Under Proton-CachyOS `cachyos-11.0-20261014` through umu-run, the bridge stored
+as `AMDHIP64_7.DLL` survived the runner's startup, `hipInit` returned 0 and HIP
+reported 2 devices.
+
+These are synthetic API and pipeline checks. No new game compatibility or
+long-duration gameplay stability is claimed.
+
 # Linux v0.3.3-preview — remove AMDNR leftovers
 
 Development **pre-release**. The manager can now clean up after AMDNR in a game
