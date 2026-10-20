@@ -57,6 +57,8 @@ class ReleaseTests(unittest.TestCase):
             self.write(self.repo / "linux" / name, ("release fixture " + name + "\n").encode())
         (self.repo / "linux/build.sh").chmod(0o755)
         self.write(self.repo / "linux/bridge/source.c", b"bridge source\n")
+        bridge = hashlib.sha256(b"tested binary x86_64-windows/amdhip64_7.dll").hexdigest()
+        self.write(self.repo / "linux/launch.py", f'RELEASED_HIP = {{\n    "{bridge}": "v0.1.0",\n}}\n'.encode())
         self.write(self.repo / "linux/licenses/toolchain.txt", b"toolchain notice\n")
         self.write(self.repo / "LICENSE", b"fork license\n")
         for name in release.HEADERS:
@@ -172,6 +174,15 @@ class ReleaseTests(unittest.TestCase):
         self.write(self.source / "build-win64.txt", b"unexpected build changes\n")
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(subprocess.CalledProcessError):
             self.package_release()
+        self.assertFalse(self.output.exists())
+
+    def test_bridge_the_wrapper_would_not_recognise_is_rejected_before_packaging(self):
+        # A later wrapper refuses a copy of this bridge left in a prefix unless launch.py lists it.
+        self.write(self.package / release.BINARIES["x86_64-windows/amdhip64_7.dll"], b"rebuilt bridge")
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit):
+            self.package_release()
+        self.assertIn("RELEASED_HIP", stderr.getvalue())
         self.assertFalse(self.output.exists())
 
     def test_validation_is_bound_to_exact_binaries_and_excludes_local_paths(self):

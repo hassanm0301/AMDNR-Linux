@@ -19,6 +19,15 @@ PREFIX_HIP = "AMDHIP64_7.DLL"
 # Earlier wrappers used the lowercase name; their journal entries are retired.
 LEGACY_PREFIX_HIP = "amdhip64_7.dll"
 PREFIX_NAMES = (PREFIX_HIP, LEGACY_PREFIX_HIP, "d3dcompiler_47.dll")
+# The bridges published releases installed in System32, by SHA-256. A game
+# folder removed without Uninstall takes its journal with it and leaves its
+# bridge in the prefix: such a file is an earlier copy of ours, not a foreign
+# HIP runtime. Add each release's bridge here before publishing it.
+RELEASED_HIP = {
+    "f25e4bb523accceef3b77c809159f61cc1139f4b2d2f69fadb2290bfa99b3287": "v0.1.0 to v0.2.1",
+    "be0a5019356bce110202f2d611178709f8d7f43ae0637836400a85e97dae165f": "v0.2.2-preview",
+    "418e79e67704322e1ca73c17d82f473e02b23bbb8c72594365484123d0877e7c": "v0.3.0-preview to v0.3.4-preview",
+}
 
 def launch_status(bundle, message):
     """Keep the last wrapper result when Steam hides its terminal output."""
@@ -43,7 +52,7 @@ def prepare_prefix(bundle, prefix):
     # placeholder creation and ownership recording across those processes.
     with (bundle / "prefixes.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        _prepare_prefix(bundle, Path(prefix).expanduser().resolve())
+        return _prepare_prefix(bundle, Path(prefix).expanduser().resolve())
 
 def _prefix_entries(record):
     if record.is_symlink():
@@ -84,12 +93,33 @@ def _check_prefix_parents(path):
     if any(parent.is_symlink() for parent in path.parents):
         raise ValueError(f"Prefix file parent became a symlink: {path}")
 
-def _retire_legacy_hip(record, entries, legacy, current, expected):
+def _set_aside_released_hip(path, notes):
+    """Move a bridge an earlier release left, without its journal, out of Wine's way.
+
+    It stays beside the bridge under a name Wine never loads, so it can be
+    renamed back. Setting the same bridge aside again keeps the first copy.
+    Anything else is a HIP DLL that is not ours, and is refused.
+    """
+    digest = sha(path) if path.is_file() and not path.is_symlink() else None
+    if digest not in RELEASED_HIP:
+        raise ValueError(f"A different HIP DLL is already installed: {path}")
+    aside = path.with_name(f"{path.name}.{digest[:16]}.bak")
+    if aside.exists() or aside.is_symlink():
+        if aside.is_symlink() or not aside.is_file() or sha(aside) != digest:
+            raise ValueError(f"Cannot set aside the HIP bridge of an earlier AMDNR Linux release: {aside} exists")
+        path.unlink()
+    else:
+        path.rename(aside)
+    notes.append(f"Set aside the HIP bridge an earlier AMDNR Linux release ({RELEASED_HIP[digest]}) "
+                 f"left without its install record: {aside}")
+
+def _retire_legacy_hip(record, entries, legacy, current, expected, notes):
     """Remove the lowercase bridge an earlier wrapper installed, and its entry.
 
-    Wine loads the exact-case name first, so a different HIP DLL under the
-    lowercase name would hide the bridge and is refused. A copy identical to
-    this bridge belongs to another installation sharing the prefix and stays.
+    Wine loads the exact-case name first, so nothing else may stay under the
+    lowercase name: an earlier release's bridge whose journal is lost is set
+    aside, and a different HIP DLL is refused. A copy identical to this bridge
+    belongs to another installation sharing the prefix and stays.
     """
     _check_prefix_parents(legacy)
     entry = next((entry for entry in entries if entry["path"] == str(legacy)), None)
@@ -99,11 +129,12 @@ def _retire_legacy_hip(record, entries, legacy, current, expected):
     # A case-insensitive folder shows one file under both names.
     same = regular and current.is_file() and not current.is_symlink() and legacy.samefile(current)
     present = (legacy.exists() or legacy.is_symlink()) and not same
-    ours = present and regular and entry is not None and sha(legacy) == entry["sha256"]
-    if present and not ours and not (regular and sha(legacy) == expected):
-        raise ValueError(f"A different HIP DLL is already installed: {legacy}")
+    digest = sha(legacy) if present and regular else None
+    ours = digest is not None and entry is not None and digest == entry["sha256"]
     if ours:
         legacy.unlink()
+    elif present and digest != expected:
+        _set_aside_released_hip(legacy, notes)
     if entry is not None:
         entries = [item for item in entries if item is not entry]
         if same and not any(item["path"] == str(current) for item in entries):
@@ -112,6 +143,8 @@ def _retire_legacy_hip(record, entries, legacy, current, expected):
     return entries
 
 def _prepare_prefix(bundle, prefix):
+    """Install the prefix support files and return what was done to files not ours."""
+    notes = []
     record = bundle / "prefixes.json"
     entries = _prefix_entries(record)
     sources = [(bundle / "x86_64-windows/amdhip64_7.dll", PREFIX_HIP),
@@ -121,7 +154,7 @@ def _prepare_prefix(bundle, prefix):
             raise ValueError(f"Missing prefix support file: {source}")
     system32 = prefix / "drive_c/windows/system32"
     entries = _retire_legacy_hip(record, entries, system32 / LEGACY_PREFIX_HIP, system32 / PREFIX_HIP,
-                                 sha(sources[0][0]))
+                                 sha(sources[0][0]), notes)
     for source, name in sources:
         destination = system32 / name
         _check_prefix_parents(destination)
@@ -147,7 +180,7 @@ def _prepare_prefix(bundle, prefix):
             if destination.is_file() and sha(destination) == expected:
                 continue
             if name == PREFIX_HIP and (destination.exists() or destination.is_symlink()):
-                raise ValueError(f"A different HIP DLL is already installed: {destination}")
+                _set_aside_released_hip(destination, notes)
             entry = {"path": str(destination), "sha256": expected}
             # The host compiles its shaders through an absolute System32 path.
             # Preserve its compiler before installing the supplied native one.
@@ -171,6 +204,7 @@ def _prepare_prefix(bundle, prefix):
             pending.replace(destination)
         finally:
             pending.unlink(missing_ok=True)
+    return notes
 
 def _write_record(record, entries):
     with tempfile.NamedTemporaryFile(mode="w", prefix=".prefixes-", dir=record.parent,
@@ -260,9 +294,10 @@ def main():
     if not prefix:
         raise ValueError("STEAM_COMPAT_DATA_PATH or WINEPREFIX must identify this game's prefix.")
     env = environment(bundle, os.environ)
-    prepare_prefix(bundle, Path(prefix).resolve())
+    notes = prepare_prefix(bundle, Path(prefix).resolve())
     launch_status(bundle, f"Wrapper prepared. Handing control to the game runner.\n"
                          f"Game directory: {bundle.parent}\nPrefix: {Path(prefix).resolve()}\n"
+                         + "".join(note + "\n" for note in notes) +
                          "This confirms wrapper setup only; neural rendering is not yet verified.")
     os.execvpe(sys.argv[1], sys.argv[1:], env)
 

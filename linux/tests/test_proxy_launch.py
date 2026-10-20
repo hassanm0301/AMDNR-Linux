@@ -1,4 +1,5 @@
 """Exercise the installed shell/Python wrapper without Wine, games, or a GPU."""
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -154,6 +155,37 @@ class ProxyLaunchTests(unittest.TestCase):
         self.assert_rejected_before_execution()
         path.unlink()
         self.assertEqual(target.read_text(), '{"proxy":"version.dll"}')
+
+    def test_bridge_an_earlier_release_left_does_not_stop_the_game(self):
+        # The prefix kept an earlier release's lowercase bridge; its game folder and journal are gone.
+        published = b"bridge of an earlier release"
+        digest = hashlib.sha256(published).hexdigest()
+        wrapper = self.bundle / "launch.py"
+        wrapper.write_text(wrapper.read_text().replace(
+            "RELEASED_HIP = {\n", f'RELEASED_HIP = {{\n    "{digest}": "v0.2.2-preview",\n', 1))
+        system32 = self.prefix / "drive_c/windows/system32"
+        system32.mkdir(parents=True)
+        (system32 / "amdhip64_7.dll").write_bytes(published)
+        result = self.invoke("game")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(self.capture.read_text())["args"], ["game"])
+        aside = system32 / f"amdhip64_7.dll.{digest[:16]}.bak"
+        self.assertEqual(aside.read_bytes(), published)
+        self.assertFalse(os.path.lexists(system32 / "amdhip64_7.dll"))
+        self.assertTrue((system32 / "AMDHIP64_7.DLL").is_file())
+        status = (self.bundle / "launch.log").read_text()
+        self.assertIn("Wrapper prepared", status)
+        self.assertIn(f"v0.2.2-preview) left without its install record: {aside}", status)
+
+        # Anything else under the name Wine prefers would hide the bridge.
+        self.capture.unlink()
+        (system32 / "amdhip64_7.dll").write_bytes(b"unrelated HIP runtime")
+        result = self.invoke("must not execute")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("A different HIP DLL is already installed", result.stderr)
+        self.assertFalse(self.capture.exists())
+        self.assertEqual((system32 / "amdhip64_7.dll").read_bytes(), b"unrelated HIP runtime")
+        self.assertIn("Launch setup failed: A different HIP DLL", (self.bundle / "launch.log").read_text())
 
 
 if __name__ == "__main__":

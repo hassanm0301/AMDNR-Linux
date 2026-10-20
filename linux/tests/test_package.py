@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Exercise installation against real temporary files, including failed copies."""
+import hashlib
 import importlib.util
 import json
 import os
@@ -321,6 +322,76 @@ class PackageTests(unittest.TestCase):
         self.assertTrue(other.with_name("AMDHIP64_7.DLL").is_file())
         launch.restore_prefixes(self.bundle)
         self.assertEqual([path.name for path in other.parent.iterdir()], ["amdhip64_7.dll"])
+
+    def test_earlier_release_bridge_without_its_journal_is_set_aside(self):
+        # A game folder moved to the Trash without Uninstall leaves its bridge in the prefix.
+        published = b"bridge of an earlier release"
+        digest = hashlib.sha256(published).hexdigest()
+        for name in ("amdhip64_7.dll", "AMDHIP64_7.DLL"):
+            with self.subTest(name=name), patch.dict(launch.RELEASED_HIP, {digest: "v0.2.2-preview"}):
+                prefix = self.root / ("orphaned prefix " + name)
+                system32 = prefix / "drive_c/windows/system32"
+                system32.mkdir(parents=True)
+                (system32 / name).write_bytes(published)
+                notes = launch.prepare_prefix(self.bundle, prefix)
+                aside = system32 / f"{name}.{digest[:16]}.bak"
+                self.assertEqual(aside.read_bytes(), published)
+                self.assertEqual(sorted(path.name for path in system32.iterdir()),
+                                 sorted(["AMDHIP64_7.DLL", "d3dcompiler_47.dll", aside.name]))
+                self.assertEqual((system32 / "AMDHIP64_7.DLL").read_bytes(), b"test placeholder")
+                self.assertEqual(len(notes), 1)
+                self.assertIn("v0.2.2-preview", notes[0])
+                self.assertIn(str(aside), notes[0])
+                entries = json.loads((self.bundle / "prefixes.json").read_text())
+                self.assertEqual(sorted(Path(entry["path"]).name for entry in entries),
+                                 ["AMDHIP64_7.DLL", "d3dcompiler_47.dll"])
+                launch.restore_prefixes(self.bundle)
+                # The earlier bridge was never this installation's: Uninstall leaves it set aside.
+                self.assertEqual([path.name for path in system32.iterdir()], [aside.name])
+
+    def test_earlier_bridge_set_aside_again_keeps_one_copy(self):
+        # Another game on the prefix still runs a wrapper that copies the lowercase bridge back.
+        published = b"bridge of an earlier release"
+        digest = hashlib.sha256(published).hexdigest()
+        prefix = self.root / "shared prefix"
+        system32 = prefix / "drive_c/windows/system32"
+        system32.mkdir(parents=True)
+        with patch.dict(launch.RELEASED_HIP, {digest: "v0.3.0-preview to v0.3.4-preview"}):
+            for _ in range(2):
+                (system32 / "amdhip64_7.dll").write_bytes(published)
+                launch.prepare_prefix(self.bundle, prefix)
+                self.assertFalse(os.path.lexists(system32 / "amdhip64_7.dll"))
+            self.assertEqual(sorted(path.name for path in system32.iterdir()),
+                             ["AMDHIP64_7.DLL", f"amdhip64_7.dll.{digest[:16]}.bak", "d3dcompiler_47.dll"])
+            self.assertEqual(launch.prepare_prefix(self.bundle, prefix), [])
+
+    def test_earlier_bridge_is_not_set_aside_over_a_different_file(self):
+        published = b"bridge of an earlier release"
+        digest = hashlib.sha256(published).hexdigest()
+        prefix = self.root / "prefix"
+        system32 = prefix / "drive_c/windows/system32"
+        system32.mkdir(parents=True)
+        (system32 / "amdhip64_7.dll").write_bytes(published)
+        aside = system32 / f"amdhip64_7.dll.{digest[:16]}.bak"
+        aside.write_bytes(b"something else")
+        with patch.dict(launch.RELEASED_HIP, {digest: "v0.2.2-preview"}):
+            with self.assertRaisesRegex(ValueError, "Cannot set aside"):
+                launch.prepare_prefix(self.bundle, prefix)
+            # A link to an earlier bridge is not a file an earlier wrapper copied.
+            aside.unlink()
+            (system32 / "amdhip64_7.dll").rename(self.root / "linked bridge.dll")
+            (system32 / "amdhip64_7.dll").symlink_to(self.root / "linked bridge.dll")
+            with self.assertRaisesRegex(ValueError, "different HIP DLL"):
+                launch.prepare_prefix(self.bundle, prefix)
+        self.assertEqual([path.name for path in system32.iterdir()], ["amdhip64_7.dll"])
+        self.assertFalse((self.bundle / "prefixes.json").exists())
+
+    def test_published_bridges_are_recognised(self):
+        # v0.2.2-preview's bridge, which a Resident Evil Requiem prefix kept after its game folder was trashed.
+        self.assertEqual(launch.RELEASED_HIP["be0a5019356bce110202f2d611178709f8d7f43ae0637836400a85e97dae165f"],
+                         "v0.2.2-preview")
+        for digest in launch.RELEASED_HIP:
+            self.assertRegex(digest, r"\A[0-9a-f]{64}\Z")
 
     def test_case_insensitive_folder_keeps_the_bridge_journalled(self):
         prefix = self.root / "casefolded prefix"
