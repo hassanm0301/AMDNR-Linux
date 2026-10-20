@@ -13,7 +13,8 @@ try:
     from PySide6.QtCore import QPoint, Qt
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton
-    from native_launcher.app import BUTTON_HEIGHT, ROW_HEIGHT, SettingsDialog, Window, STYLE
+    from native_launcher.app import (BUTTON_HEIGHT, ROW_HEIGHT, LaunchOptionsDialog, SettingsDialog, Window, STYLE,
+                                     launch_options_text)
     QT = True
 except ImportError:
     QT = False
@@ -42,6 +43,7 @@ class FakeController:
         self.proxy_requests = []
         self.occupied_proxies = set()
         self.leftovers = None
+        self.launch_option = {"options": "'/games/amdnr-linux/run.sh' %command%", "state": "current"}
 
     def discover(self):
         return self.games
@@ -56,7 +58,9 @@ class FakeController:
                       proxy_name=self.proxy if self.installed else None, proxy_history=list(self.proxy_history),
                       proxy_options=options, proxy_next=next((name for name in SUPPORTED
                           if name not in self.proxy_history and name not in self.occupied_proxies), None))
-        if not self.installed:
+        if self.installed:
+            result["launch_option"] = dict(self.launch_option)
+        else:
             result["leftovers"] = dict(self.leftovers or dict(remove=[], restore=[], folders=[], prefix=[], kept=[],
                                                               issues=[], save_config=False, steam_wrapper=False))
         return result
@@ -245,6 +249,36 @@ class GuiTests(unittest.TestCase):
         self.assertTrue(self.window.clean.isVisible())
         self.assertFalse(self.window.clean.isEnabled())
         self.assertIn("cannot be removed yet:\nSymlink in installation path", self.window.description.text())
+
+    def test_steam_launch_option_is_shown_once_installed_and_copies(self):
+        self.assertTrue(self.window.launch_options.isVisible())
+        self.assertFalse(self.window.launch_options.isEnabled())
+        self.assertEqual(self.window.launch_options.toolTip(), "Install neural rendering first.")
+        self.controller.installed = True
+        self.controller.launch_option = {"options": "MANGOHUD=1 '/games/amdnr-linux/run.sh' %command%", "state": "merged"}
+        self.window.select_game(self.window.library.currentItem())
+        self.wait_idle()
+        self.assertTrue(self.window.launch_options.isEnabled())
+        self.assertEqual(self.window.launch_options.toolTip(), "")
+        opened = []
+        with patch.object(LaunchOptionsDialog, "exec", lambda dialog: opened.append(dialog)):
+            QTest.mouseClick(self.window.launch_options, Qt.MouseButton.LeftButton)
+        dialog, = opened
+        self.addCleanup(dialog.deleteLater)
+        self.assertEqual(dialog.command.toPlainText(), "MANGOHUD=1 '/games/amdnr-linux/run.sh' %command%")
+        self.assertTrue(dialog.command.isReadOnly())
+        self.assertIn("choose Repair", dialog.explanation.text())
+        self.assertIn("General > Launch Options. Your current launch options are kept.", dialog.explanation.text())
+        QTest.mouseClick(dialog.copy_button, Qt.MouseButton.LeftButton)
+        self.assertEqual(QApplication.clipboard().text(), dialog.command.toPlainText())
+        self.assertEqual(dialog.copy_button.text(), "Copied")
+        for button in dialog.findChildren(QPushButton):
+            self.assertEqual(button.height(), BUTTON_HEIGHT)
+        game, root = self.window.game, self.controller.root
+        self.assertIn("already starts this game", launch_options_text(game, {"options": "", "state": "current"}))
+        self.assertIn("put the wrapper just before %command%", launch_options_text(game, {"options": "", "state": "plain"}))
+        manual = SteamGame("", "Manual game", root, Path(), root, root)
+        self.assertIn("non-Steam game", launch_options_text(manual, {"options": "", "state": "plain"}))
 
     def test_steam_running_prevents_operation(self):
         with patch("native_launcher.app.steam.steam_is_running", return_value=True), patch.object(QMessageBox, "information") as notice:

@@ -286,7 +286,16 @@ class Controller:
                                                    leftovers=(result.get("leftovers") or {}).get("remove", ()))
                              + stores.notices(game, installed=result.get("installed", False)))
         result["component_choices"] = self.component_choices(game, result)
+        if result.get("installed") and not stores.store_name(game):
+            result["launch_option"] = self.launch_option(game)
         return result
+
+    def launch_option(self, game):
+        """What to paste in Steam's launch options for this game, as steam.suggested_options returns it."""
+        wrapper = game.exe_dir / "amdnr-linux/run.sh"
+        if game.appid:
+            return steam.suggested_options(game, wrapper)
+        return {"options": shlex.quote(str(wrapper)) + " %command%", "state": "plain"}
 
     def gpu(self):
         """The ROCm-visible GPU used to filter runtime choices (cached)."""
@@ -570,7 +579,7 @@ class Controller:
             return stores.install_result(game)
         if not game.appid:
             return {"message": 'Installed. Add the launch option shown below to your game runner.',
-                    "launch_options": shlex.quote(str(directory / "amdnr-linux/run.sh")) + " %command%"}
+                    "launch_options": self.launch_option(game)["options"]}
         return {"message": "Installed. Open Steam and launch your game normally. Enable DLSS, FSR or XeSS in the game; Insert opens OptiScaler and Home toggles neural rendering."}
 
     def _clean(self, game):

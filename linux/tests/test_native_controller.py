@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import sys
 import tempfile
@@ -98,6 +99,21 @@ class ControllerTests(unittest.TestCase):
         self.app.operate("uninstall", self.game)
         self.assertEqual(self.config.read_bytes(), self.config_before)
         self.assertEqual(backend_fixture.snapshot(self.game_dir), self.fixture.initial)
+
+    def test_launch_option_follows_steam_after_install(self):
+        quoted = shlex.quote(str((self.game_dir / "amdnr-linux/run.sh").resolve()))
+        self.assertNotIn("launch_option", self.app.inspect(self.game))
+        self.app.operate("install", self.game)
+        self.assertEqual(self.app.inspect(self.game)["launch_option"],
+                         {"options": f"MANGOHUD=1 gamemoderun {quoted} %command% --original", "state": "current"})
+        # Edited in Steam later: the wrapper goes back in front of %command%.
+        self.config.write_bytes(steam_fixture.config("MANGOHUD=1 %command%"))
+        self.assertEqual(self.app.inspect(self.game)["launch_option"],
+                         {"options": f"MANGOHUD=1 {quoted} %command%", "state": "merged"})
+        manual = steam.SteamGame("", "Manual game", self.game_dir, Path(), self.game_dir, self.game_dir)
+        self.assertEqual(self.app.launch_option(manual),
+                         {"options": shlex.quote(str(self.game_dir / "amdnr-linux/run.sh")) + " %command%",
+                          "state": "plain"})
 
     def test_proxy_switch_failure_restores_files_and_launch_options(self):
         self.app.operate("install", self.game)

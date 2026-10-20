@@ -5,7 +5,7 @@ import os
 import sys
 
 from PySide6.QtCore import QThread, QTimer, Qt, QUrl, QSize, Signal, Slot
-from PySide6.QtGui import QDesktopServices, QFont, QIcon, QPixmap
+from PySide6.QtGui import QDesktopServices, QFont, QIcon, QPixmap, QTextOption
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel, QLayout, QLineEdit,
     QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QProgressBar,
@@ -248,6 +248,61 @@ class SettingsDialog(QDialog):
             super().closeEvent(event)
 
 
+def launch_options_text(game, option):
+    """How to use the launch option shown for this game."""
+    if not game.appid:
+        return ("If you added this game to Steam as a non-Steam game, paste this in its launch options: right-click "
+                "the game in Steam, choose Properties, and paste it under Shortcut > Launch Options. In another game "
+                "runner, put the wrapper in front of the command that starts the game.")
+    if option["state"] == "current":
+        return ("Steam already starts this game through the AMDNR wrapper with these launch options. If you edit "
+                "them in Steam, keep the wrapper just before %command%.")
+    return ("To load neural rendering, Steam must start this game through the AMDNR wrapper. Close Steam and choose "
+            "Repair to set it for you, or paste this yourself: right-click the game in Steam, choose Properties, and "
+            "paste it under General > Launch Options. "
+            + ("Your current launch options are kept." if option["state"] == "merged"
+               else "If you use other launch options, put the wrapper just before %command%."))
+
+
+class LaunchOptionsDialog(QDialog):
+    """The line to paste in Steam's launch options, ready to copy."""
+
+    def __init__(self, window, game, option):
+        super().__init__(window)
+        self.setWindowTitle("Steam launch option — " + NAME)
+        self.setMinimumWidth(560)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(12)
+        layout.addWidget(label("STEAM LAUNCH OPTION", "eyebrow"))
+        layout.addWidget(label(game.name, "brand", True))
+        self.explanation = label(launch_options_text(game, option), "muted", True)
+        layout.addWidget(self.explanation)
+        # Long library paths wrap, so the whole line can be checked before pasting.
+        self.command = QTextEdit()
+        self.command.setPlainText(option["options"])
+        self.command.setReadOnly(True)
+        self.command.setFont(QFont("DejaVu Sans Mono", 10))
+        self.command.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        self.command.setFixedHeight(84)
+        self.command.setAccessibleName("Steam launch option")
+        layout.addWidget(self.command)
+        footer = QHBoxLayout()
+        footer.setSpacing(8)
+        footer.addStretch()
+        self.copy_button = window.button("Copy", self.copy, "primary")
+        self.close_button = window.button("Close", self.accept)
+        footer.addWidget(self.copy_button)
+        footer.addWidget(self.close_button)
+        layout.addLayout(footer)
+        # Wrapped labels would otherwise size the dialog for a narrow width.
+        self.resize(self.minimumWidth(), layout.totalHeightForWidth(self.minimumWidth()))
+
+    def copy(self):
+        QApplication.clipboard().setText(self.command.toPlainText())
+        self.copy_button.setText("Copied")
+
+
 class Window(QMainWindow):
     library_ready = Signal()
 
@@ -351,13 +406,13 @@ class Window(QMainWindow):
         actions.setSpacing(8)
         self.install = self.button("Install neural rendering", lambda: self.operate("install"), "primary")
         self.launch = self.button("Launch in Steam ↗", self.launch_game)
+        self.launch_options = self.button("Steam launch option", self.show_launch_options)
         self.repair = self.button("Repair", lambda: self.operate("repair"))
         self.update = self.button("Update", lambda: self.operate("update"))
         self.folder = self.button("Game folder", self.open_folder)
         self.logs = self.button("Save logs", self.save_logs)
         actions.addWidget(self.install)
-        actions.addWidget(self.launch)
-        for buttons in ((self.repair, self.update), (self.folder, self.logs)):
+        for buttons in ((self.launch, self.launch_options), (self.repair, self.update), (self.folder, self.logs)):
             row = QHBoxLayout()
             row.setSpacing(8)
             for button in buttons:
@@ -491,6 +546,10 @@ class Window(QMainWindow):
         self.launch.setToolTip(launch_issue or "")
         self.launch.setEnabled(bool(selected and (self.game.appid or (store and not launch_issue))
                                     and not self.busy and not unsafe))
+        # Heroic and Lutris take a wrapper path instead; their notices show it.
+        self.launch_options.setVisible(bool(selected and not store))
+        self.launch_options.setEnabled(bool(self.inspection.get("launch_option") and not self.busy))
+        self.launch_options.setToolTip("" if installed else "Install neural rendering first.")
         self.folder.setEnabled(bool(resolved and not self.busy))
         self.logs.setEnabled(bool(resolved and not self.busy))
         can_choose = bool(resolved and not ambiguous and not self.busy and not self.inspection.get("running")
@@ -1082,6 +1141,11 @@ class Window(QMainWindow):
                else stores.launch_url(self.game) if store else None)
         if url and not QDesktopServices.openUrl(QUrl(url)):
             self.report(f"Could not open {store or 'Steam'}. Start the game from {store or 'Steam'} instead.")
+
+    def show_launch_options(self):
+        option = self.inspection.get("launch_option")
+        if self.game and option and not self.busy:
+            LaunchOptionsDialog(self, self.game, option).exec()
 
     def open_folder(self):
         if self.game:

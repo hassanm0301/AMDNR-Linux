@@ -681,6 +681,27 @@ def wrapper_leftover(game: SteamGame, wrapper: Path, state_dir: Path) -> bool:
     return False
 
 
+def suggested_options(game: SteamGame, wrapper: Path) -> dict:
+    """The launch options to paste in Steam for this wrapper. Read-only.
+
+    The game's current options are kept, with the wrapper just before
+    %command%. "state" is "current" when Steam already starts the game through
+    it, "merged" when current options were kept, else "plain".
+    """
+    wrapper = str(Path(wrapper).expanduser().resolve())
+    plain = {"options": shlex.quote(wrapper) + ' %command%', "state": "plain"}
+    try:
+        for _, _, data in _accounts(game, required=False):
+            _, option = _options(_decode(data), game.appid)
+            current = option.value.value if option else None
+            if current and current.strip() not in ('', '%command%'):
+                options, _, adopted = _with_wrapper(current, wrapper)
+                return {"options": options, "state": "current" if adopted else "merged"}
+    except (OSError, ValueError):
+        pass
+    return plain
+
+
 def remove_wrapper(game: SteamGame, wrapper: Path, state_dir: Path) -> bool:
     """Take a leftover wrapper out of the game's launch options; True if Steam's settings changed.
 

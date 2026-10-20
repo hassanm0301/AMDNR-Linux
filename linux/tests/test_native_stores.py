@@ -594,6 +594,7 @@ class StoreGuiTests(unittest.TestCase):
         self.assertIn("shows the wrapper to add in Heroic", self.window.description.text())
         self.assertFalse(self.window.launch.isEnabled())
         self.assertEqual(self.window.launch.toolTip(), "Install neural rendering and add the wrapper in Heroic first.")
+        self.assertFalse(self.window.launch_options.isVisible())
         with patch.object(QMessageBox, "information") as dialog:
             self.window.operation_done({"message": "Installed.", "title": "Add the wrapper in Heroic",
                                         "launch_options": "/games/amdnr-linux/run.sh"})
@@ -619,6 +620,7 @@ class StoreGuiTests(unittest.TestCase):
         root = self.controller.root
         self.show(steam.SteamGame("12", "Steam fixture", root, root, root, root))
         self.assertEqual(self.window.launch.text(), "Launch in Steam ↗")
+        self.assertTrue(self.window.launch_options.isVisible())
         with patch.object(QDesktopServices, "openUrl", return_value=True) as open_url:
             QTest.mouseClick(self.window.launch, Qt.MouseButton.LeftButton)
         self.assertEqual(open_url.call_args.args[0].toString(), "steam://rungameid/12")

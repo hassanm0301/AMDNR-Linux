@@ -386,6 +386,23 @@ class SteamTests(unittest.TestCase):
                 self.assertEqual(self.option(path), expected)
         self.assertEqual(path.read_bytes(), config(None))  # the whole LaunchOptions line went
 
+    def test_suggested_options_keep_current_options_and_never_write(self):
+        quoted = steam.shlex.quote(str(self.wrapper.resolve()))
+        for options, expected, state in (
+                (None, f'{quoted} %command%', 'plain'),
+                ('%command%', f'{quoted} %command%', 'plain'),
+                ('MANGOHUD=1 gamemoderun %command% --x', f'MANGOHUD=1 gamemoderun {quoted} %command% --x', 'merged'),
+                ('-dx12', f'{quoted} %command% -dx12', 'merged'),
+                (f'MANGOHUD=1 {quoted} %command%', f'MANGOHUD=1 {quoted} %command%', 'current'),
+                ('%command%; echo bad', f'{quoted} %command%', 'plain')):
+            with self.subTest(options=options):
+                path = self.account(options)
+                before = path.read_bytes()
+                self.assertEqual(steam.suggested_options(self.game, self.wrapper),
+                                 {'options': expected, 'state': state})
+                self.assertEqual(path.read_bytes(), before)
+        self.assertFalse(steam.journal_path(self.game, self.state).exists())
+
     def test_leftover_wrapper_keeps_later_edits_and_other_installations(self):
         path = self.account('%command%')
         steam.configure_launch(self.game, self.wrapper, self.state)
