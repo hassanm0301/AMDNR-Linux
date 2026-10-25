@@ -1,6 +1,20 @@
-# AMDNR — AMD 显卡上的 DLSS 5 神经渲染（OptiScaler 构建版）— v0.3.5.6
+# AMDNR — AMD 显卡上的 DLSS 5 神经渲染（OptiScaler 构建版）— v0.3.5.8 Public View
 
 [English](README.md) | **中文** | [Português](README.pt-BR.md) | [Español](README.es.md) | [العربية](README.ar.md) | [Français](README.fr.md) | [Italiano](README.it.md) | [Русский](README.ru.md) | [Polski](README.pl.md)
+
+> **0.3.5.8 Public View 更新 — Launcher 0.3.5.36** (2026-10-23)
+> 
+> - 本节说明当前版本；下方保留带版本日期的历史文档。完整下载链接位于本框末尾。
+> - Friendly use 保留原菜单风格，提供 NR、超分、FG，以及受支持路径的 1–3 次处理；mochi 仍为单次。Advanced 的重置包含确认和备份，重启后生效。Classic carry 为可选功能，在 lmxxf Model A 和 mochi A/B 中默认关闭，与模型历史和 Model interleave 分开控制。
+> - 运行时为 lmxxf 0.4.4 A/B、Daniel 0.8.0 和 mochizuki 0.0.7。启动器自动下载组件、修复缺失文件，并在验证成功后清理符合条件的旧副本。请通过启动器安装，不要将所有组件 ZIP 都解压到游戏目录。不捆绑 NVIDIA DLL 或 NR 权重。
+> - 修正 mochi 深度/运动输入、完成输出计数和颜色传递，处理 RE3 报告中的 SNORM 格式、部分资源生命周期问题和 Anywhere 的 Model E 同步。HelixSR 2.0.0 从作者处下载。随包 FSR 为 SR 4.1.1 / FG 4.0.1；SR 4.1.2 / FG 4.0.2 需要驱动提供。
+> - 包括 Overlay Guide、更大的 Gallery 与每张图片对应的配置，以及自动准备/修复。配套社区服务器已部署；表情反应、提及和 Enter 发送需要配套启动器。聊天消息按滚动 48 小时保留。
+> - 并非所有崩溃、闪烁、模糊、拖影和 RR/MFG 帧节奏问题都已解决。Mochi RDNA 3 仍延期。此最终二进制的游戏验证及对应源代码发布尚待完成。遇到问题请提交 COLLECT LOGS。
+> 
+> [AMDNR-v0.3.5.8.zip](https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha0.3.5.8/AMDNR-v0.3.5.8.zip) · [AMDNR-Anywhere-0.3.5.8.zip](https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha0.3.5.8/AMDNR-Anywhere-0.3.5.8.zip) · [AMDNR-Mochi-0.0.7-component.zip](https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha0.3.5.8/AMDNR-Mochi-0.0.7-component.zip) · [v0.8.0-Runtime.zip](https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha0.3.5.8/v0.8.0-Runtime.zip) · [AMDNR-Launcher.exe](https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha0.3.5.8/AMDNR-Launcher.exe)
+> 
+> [CHANGELOG.md](CHANGELOG.md) · [0.3.5.8](https://github.com/3zwr1/AMD-NR---OptiScaler/releases/tag/Alpha0.3.5.8)
+
 
 > **我们需要你的支持。** 加入 Discord 服务器 —— <https://discord.gg/AMDNR> —— 获取帮助、提交
 > 问题、领取测试版；每一份带日志的反馈都会让下一个版本更好。

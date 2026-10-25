@@ -1,6 +1,20 @@
-# AMDNR — DLSS 5 Neural Rendering na AMD (build OptiScaler) — v0.3.5.6
+# AMDNR — DLSS 5 Neural Rendering na AMD (build OptiScaler) — v0.3.5.8 Public View
 
 [English](README.md) | [中文](README.zh-CN.md) | [Português](README.pt-BR.md) | [Español](README.es.md) | [العربية](README.ar.md) | [Français](README.fr.md) | [Italiano](README.it.md) | [Русский](README.ru.md) | **Polski**
+
+> **Nowości w 0.3.5.8 Public View — Launcher 0.3.5.36** (2026-10-23)
+> 
+> - Ta sekcja opisuje bieżącą wersję; poniżej zachowano datowaną dokumentację historyczną. Pliki do pobrania znajdują się na końcu tego bloku.
+> - Friendly use zachowuje oryginalny wygląd: NR, skalowanie, FG i 1–3 przebiegi tam, gdzie są obsługiwane; mochi używa jednego. Advanced oferuje reset z potwierdzeniem i kopią zapasową, stosowany po ponownym uruchomieniu. Classic carry jest opcjonalne i domyślnie wyłączone dla lmxxf Model A oraz mochi A/B; jest niezależne od historii modelu i Model interleave.
+> - lmxxf 0.4.4 A/B, Daniel 0.8.0 i mochizuki 0.0.7. Launcher pobiera komponenty, naprawia brakujące pliki i usuwa kwalifikujące się stare kopie po weryfikacji. Nie rozpakowuj wszystkich ZIP do gry. Nie dołączono bibliotek NVIDIA ani wag NR.
+> - Poprawki głębi/ruchu i kolorów mochi, formatu SNORM w RE3, czasu życia zasobów i synchronizacji Model E w Anywhere. HelixSR 2.0.0 pochodzi od autora. Dołączony FSR: SR 4.1.1 / FG 4.0.1; SR 4.1.2 / FG 4.0.2 wymagają odpowiedniego sterownika.
+> - Overlay Guide, większa Gallery z konfiguracją danego obrazu i automatyczne przygotowanie/naprawa. Serwer społeczności jest wdrożony; reakcje, wzmianki i wysyłanie Enterem wymagają odpowiedniego launchera. Wiadomości są przechowywane przez ruchome 48 godzin.
+> - Nie rozwiązano wszystkich awarii, migotania, rozmycia, ghostingu i problemów RR/MFG. Mochi RDNA 3 pozostaje odłożone. Końcowe testy w grach i dostarczenie odpowiadającego kodu źródłowego są nadal wymagane. Wyślij COLLECT LOGS.
+> 
+> [AMDNR-v0.3.5.8.zip](https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha0.3.5.8/AMDNR-v0.3.5.8.zip) · [AMDNR-Anywhere-0.3.5.8.zip](https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha0.3.5.8/AMDNR-Anywhere-0.3.5.8.zip) · [AMDNR-Mochi-0.0.7-component.zip](https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha0.3.5.8/AMDNR-Mochi-0.0.7-component.zip) · [v0.8.0-Runtime.zip](https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha0.3.5.8/v0.8.0-Runtime.zip) · [AMDNR-Launcher.exe](https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha0.3.5.8/AMDNR-Launcher.exe)
+> 
+> [CHANGELOG.md](CHANGELOG.md) · [0.3.5.8](https://github.com/3zwr1/AMD-NR---OptiScaler/releases/tag/Alpha0.3.5.8)
+
 
 > **Potrzebujemy Twojego wsparcia.** Dołącz do serwera Discord — <https://discord.gg/AMDNR> — znajdziesz tam
 > pomoc, zgłosisz błędy i pobierzesz testowe buildy; każde zgłoszenie z logiem sprawia, że kolejny build jest lepszy.

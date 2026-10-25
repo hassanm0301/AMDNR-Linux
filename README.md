@@ -9,9 +9,23 @@
 [Linux installation guide](linux/INSTALL.md); see
 [releases](https://github.com/hassanm0301/AMDNR-Linux/releases) for downloads.
 
-## Upstream AMDNR documentation — v0.3.5.6
+## Upstream AMDNR documentation — v0.3.5.8 Public View
 
 **English** | [中文](README.zh-CN.md) | [Português](README.pt-BR.md) | [Español](README.es.md) | [العربية](README.ar.md) | [Français](README.fr.md) | [Italiano](README.it.md) | [Русский](README.ru.md) | [Polski](README.pl.md)
+
+> **New in 0.3.5.8 Public View — Launcher 0.3.5.36** (2026-10-23)
+> 
+> - Download the complete release below. This section describes the current release; dated sections below retain the project's earlier documentation and do not override these notes.
+> - Friendly use keeps the original menu style, with NR, upscaling, FG and 1–3 passes where supported. Mochizuki remains single-pass. Advanced offers Reset all settings with confirmation and backup; the reset applies on restart. Classic carry is optional, OFF by default for lmxxf Model A and mochi A/B; model history and Model interleave are separate.
+> - Runtimes: lmxxf 0.4.4 (Models A/B), Daniel 0.8.0 and mochizuki 0.0.7. The launcher downloads supported components, repairs missing runtime files and cleans eligible superseded cache copies after verification. Use the launcher for installation; do not extract all component ZIPs into the game folder. NVIDIA DLLs and NR weights are not bundled.
+> - Mochi depth/motion inputs, completed-output reporting and carry colour transport were corrected. The RE3 SNORM motion-format refusal, several resource-lifetime paths and Anywhere Model E synchronization were addressed. HelixSR 2.0.0 downloads from its author. Bundled FSR remains SR 4.1.1 / FG 4.0.1; SR 4.1.2 / FG 4.0.2 require a driver that supplies them.
+> - Launcher: Overlay Guide, larger Gallery with image-associated configurations, automatic preparation/repair and window-state improvements. The matching community server is deployed; chat reactions, mentions and Enter-to-send require the matching launcher. Messages expire after a rolling 48 hours.
+> - Known limits: remaining player crashes, flicker, blur, ghosting and RR/MFG pacing are not all resolved. Mochi RDNA 3 remains deferred. Final in-game qualification of this exact binary and corresponding-source release remain pending. Send COLLECT LOGS for failures.
+> 
+> [AMDNR-v0.3.5.8.zip](https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha0.3.5.8/AMDNR-v0.3.5.8.zip) · [AMDNR-Anywhere-0.3.5.8.zip](https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha0.3.5.8/AMDNR-Anywhere-0.3.5.8.zip) · [AMDNR-Mochi-0.0.7-component.zip](https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha0.3.5.8/AMDNR-Mochi-0.0.7-component.zip) · [v0.8.0-Runtime.zip](https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha0.3.5.8/v0.8.0-Runtime.zip) · [AMDNR-Launcher.exe](https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha0.3.5.8/AMDNR-Launcher.exe)
+> 
+> [CHANGELOG.md](CHANGELOG.md) · [0.3.5.8](https://github.com/3zwr1/AMD-NR---OptiScaler/releases/tag/Alpha0.3.5.8)
+
 
 > **We need your support.** Join the Discord server — <https://discord.gg/AMDNR> — for
 > help, bug reports and test builds; every report with a log makes the next build better.

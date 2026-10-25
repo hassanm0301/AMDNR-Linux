@@ -1,12 +1,10 @@
 {
   "schemaVersion": 1,
   "launcher": {
-    "version": "0.3.5.25",
-    "url": "https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha0.3.5.6/AMDNR-Launcher.exe",
-    "sha256": "06d871869648859ef96896aba601cc06bb65eccbac5735960add683589163982",
-    "mirrors": [
-      "https://lab.amdnr.workers.dev/v2/releases/public/files/06d871869648-AMDNR-Launcher.exe"
-    ]
+    "version": "0.3.5.39",
+    "url": "https://lab.amdnr.workers.dev/v2/releases/public/files/7892edd7dd4b-AMDNR-Launcher.exe",
+    "sha256": "7892edd7dd4b7b0ff663fe1eb13d8982705270e75545ea1b04cf498055e674bc",
+    "size": 74248816
   },
   "sources": [
     {
@@ -71,6 +69,10 @@
       },
       "modelLSr": {
         "package": "model-l-release"
+      },
+      "components": {
+        "neuralHub080": "amdnr-neuralhub080-host",
+        "mochizuki": "amdnr-modelb-mochizuki"
       }
     },
     {
@@ -145,12 +147,24 @@
   "packages": [
     {
       "id": "amdnr",
-      "version": "0.3.5.6",
-      "url": "https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha0.3.5.6/AMDNR-v0.3.5.6.zip",
-      "sha256": "e7ffc09696f1a4e06d26dc0c228d15a9c74a0e56e3d24be6a130a0f5e49968d8",
-      "size": 753231620,
+      "version": "0.3.5.8",
+      "url": "https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha0.3.5.8/AMDNR-v0.3.5.8.zip",
+      "sha256": "5be27149c19442c4b022e993c679fdd17879fa68a5b472afa4521205e1e90695",
+      "size": 1008053921,
       "exclude": [],
       "previous": [
+        {
+          "version": "0.3.5.7",
+          "url": "https://lab.amdnr.workers.dev/v2/releases/public/files/c7d4b8158cfc-AMDNR-v0.3.5.7.zip",
+          "sha256": "c7d4b8158cfc946adb9b0152a5ad958683a1669e2facc70ea0e1418262cf77d6",
+          "size": 1004118398
+        },
+        {
+          "version": "0.3.5.6",
+          "url": "https://lab.amdnr.workers.dev/v2/releases/public/files/44ef8b2efa81-AMDNR-v0.3.5.6.zip",
+          "sha256": "44ef8b2efa81bae52ab4957c8a4878f0c50e0f9d8394a25e1460041dfa977b4e",
+          "size": 753231620
+        },
         {
           "version": "0.3.5.5R4",
           "url": "https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha0.3.5.5R4/AMDNR-v0.3.5.5R4.zip",
@@ -219,8 +233,8 @@
         }
       ],
       "mirrors": [
-        "https://lab.amdnr.workers.dev/v2/releases/public/files/44ef8b2efa81-AMDNR-v0.3.5.6.zip"
-      ] 
+        "https://lab.amdnr.workers.dev/v2/releases/public/files/5be27149c194-AMDNR-v0.3.5.8.zip"
+      ]
     },
     {
       "id": "theautomatic",
@@ -412,9 +426,9 @@
     {
       "id": "anywhere-host",
       "version": "0.6.8-experimental.1-srtest0356",
-      "url": "https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha0.3.5.6/AMDNR-Anywhere-0.3.5.6.zip",
-      "sha256": "50d83e482ad45bfba400e05871bea1cf74404cb2716e3dde3306e44fae151383",
-      "size": 132466212,
+      "url": "https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha0.3.5.8/AMDNR-Anywhere-0.3.5.8.zip",
+      "sha256": "05462b0f40eb1a2340168b54e2e0a5dd53df2d598b1059cbc12616b80ce5c64b",
+      "size": 101623094,
       "exclude": [
         "nvngx_*.dll",
         "sl.*.dll",
@@ -423,7 +437,7 @@
         "nvsdk_ngx*.dll"
       ],
       "mirrors": [
-        "https://lab.amdnr.workers.dev/v2/releases/public/files/50d83e482ad4-AMDNR-Anywhere-0.3.5.6.zip"
+        "https://lab.amdnr.workers.dev/v2/releases/public/files/05462b0f40eb-AMDNR-Anywhere-0.3.5.8.zip"
       ]
     },
     {
@@ -434,19 +448,12 @@
       "size": 95232
     },
     {
-      "id": "optipatcher",
-      "version": "0.40",
-      "url": "https://github.com/optiscaler/OptiPatcher/releases/download/v0.40/OptiPatcher_v0.40.asi",
-      "sha256": "a4ed60da15ea5ffb16cb94e1b029a4fb97dcc9e36f034e032e05ae0157119d9a",
-      "size": 78336
-    },
-    {
       "passSha256": null,
-      "version": "1.8.1-abab32b1",
+      "version": "2.0.0-0d60686e",
       "rawArchive": true,
-      "size": 55766339,
-      "sha256": "abab32b16acf2536b39663763c355f3cfd35c4876c90297d6b5481bd9ad03a19",
-      "url": "https://github.com/lonewolf0622/HelixSR/releases/download/v1.8.1/HelixSR-1.8.1.zip",
+      "size": 136997025,
+      "sha256": "0d60686eddbb0abd680b27d12a088344b212464ebf0a2dc18d10387e1c817f52",
+      "url": "https://github.com/lonewolf0622/HelixSR/releases/download/v2.0.0/HelixSR-2.0.0.zip",
       "id": "helixsr-release"
     },
     {
@@ -468,6 +475,26 @@
       "sha256": "dc8edb5ff5e1f3fada048505d4be27705904b5e8c646c90cfcec91e13be20424",
       "url": "https://github.com/countervolts/d4r/releases/download/v0.1.4/d4r-0.1.4-windows.zip",
       "id": "model-l-release"
+    },
+    {
+      "id": "amdnr-neuralhub080-host",
+      "version": "0.8.0",
+      "url": "https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha0.3.5.8/v0.8.0-Runtime.zip",
+      "mirrors": [
+        "https://lab.amdnr.workers.dev/v2/releases/public/files/864208e71cfd-v0.8.0-Runtime.zip"
+      ],
+      "sha256": "864208e71cfde3f355b693133f2079fd2cde8a249770cf410f930fa6fc6d8eab",
+      "size": 58881730
+    },
+    {
+      "id": "amdnr-modelb-mochizuki",
+      "version": "0.0.7",
+      "url": "https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha0.3.5.8/AMDNR-Mochi-0.0.7-component.zip",
+      "mirrors": [
+        "https://lab.amdnr.workers.dev/v2/releases/public/files/fa9a8bb7a56e-AMDNR-Mochi-0.0.7-component.zip"
+      ],
+      "sha256": "fa9a8bb7a56e2da84f58a4ce28cf9235489e2af9409ea1a35b1fc3fbb75b7b98",
+      "size": 56816796
     }
   ],
   "compatibility": [],
@@ -478,7 +505,6 @@
     "version.dll",
     "dbghelp.dll",
     "winhttp.dll",
-    "Optiscaler.asi",
     "wininet.dll"
   ],
   "proxyOverrides": [
@@ -638,5 +664,65 @@
   "hiddenSteamAppIds": [],
   "communityLab": {
     "baseUrl": "https://lab.amdnr.workers.dev"
-  }
+  },
+  "nvidiaFiles": [
+    {
+      "kind": "sr",
+      "file": "nvngx_dlss.dll",
+      "version": "310.9.16.0",
+      "size": 58956912,
+      "gitBlobSha1": "23c4672e4a31ef303e8f98ff4f0d146bd1718ccf",
+      "url": "https://raw.githubusercontent.com/NVIDIA/DLSS/v310.9.16/lib/Windows_x86_64/rel/nvngx_dlss.dll",
+      "hostAccepted": true
+    },
+    {
+      "kind": "fg",
+      "file": "nvngx_dlssg.dll",
+      "version": "310.9.16.0",
+      "size": 7506544,
+      "gitBlobSha1": "71b8070cdced79e8df3414060337c84d91e38422",
+      "url": "https://raw.githubusercontent.com/NVIDIA/DLSS/v310.9.16/lib/Windows_x86_64/rel/nvngx_dlssg.dll",
+      "hostAccepted": true
+    },
+    {
+      "kind": "sr",
+      "file": "nvngx_dlss.dll",
+      "version": "310.8.0.0",
+      "sha256": "c85f971ce023c9f3492fc7455f0b01a24ba18ea39636407a846902c4360b0b7e",
+      "size": 58956400,
+      "url": "https://lab.amdnr.workers.dev/v2/releases/public/files/c85f971ce023-nvngx_dlss.dll"
+    },
+    {
+      "kind": "rr",
+      "file": "nvngx_dlssd.dll",
+      "version": "310.9.16.0",
+      "sha256": "b49435ae346f227feafe7bbe937d88277ea0ee7323975ec06488f377fdb46cee",
+      "size": 48343664,
+      "url": "https://lab.amdnr.workers.dev/v2/releases/public/files/b49435ae346f-nvngx_dlssd.dll"
+    },
+    {
+      "kind": "fg",
+      "file": "nvngx_dlssg.dll",
+      "version": "310.8.0.0",
+      "sha256": "5d5cbf14d2727d47f93fd10bf77bd91708ae122482a6f86fd564971641ebd47b",
+      "size": 7453808,
+      "url": "https://lab.amdnr.workers.dev/v2/releases/public/files/5d5cbf14d272-nvngx_dlssg.dll"
+    },
+    {
+      "kind": "nr",
+      "file": "nvngx_dlssnr.dll",
+      "version": "310.9.16.0",
+      "sha256": "2bc19bc09a7b89dd44f73e2ac0108fcc586e2154bdd0830f242f4f040e28789f",
+      "size": 266424944,
+      "url": "https://lab.amdnr.workers.dev/v2/releases/public/files/2bc19bc09a7b-nvngx_dlssnr.dll"
+    },
+    {
+      "kind": "nr",
+      "file": "nvngx_dlssnr.dll",
+      "version": "310.8.0.0",
+      "sha256": "e16bcf15e16e13f527491cdf7845b2fe6521a738d8f7c9c721866a8496e1fc8e",
+      "size": 165840496,
+      "url": "https://lab.amdnr.workers.dev/v2/releases/public/files/e16bcf15e16e-nvngx_dlssnr.dll"
+    }
+  ]
 }
