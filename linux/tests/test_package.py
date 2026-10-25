@@ -79,6 +79,8 @@ class PackageTests(unittest.TestCase):
         self.assertTrue((staged / "amdnr-linux/x86_64-windows/amdhip64_7.dll").is_file())
         self.assertTrue((staged / "amdnr-linux/proxies.py").is_file())
         self.assertEqual(json.loads((staged / "amdnr-linux/proxy.json").read_text()), {"proxy": "winmm.dll"})
+        ini = (staged / "OptiScaler.ini").read_text().splitlines()
+        self.assertEqual(ini[:4], ["[DlssNr]", f"StyleSlot1={manage.STYLE_SLOT}", "Enabled=true", "NrBackend=lmxxf"])
 
     def test_automatic_proxy_skips_case_insensitive_foreign_mod(self):
         (self.game / "WINMM.DLL").write_bytes(b"another mod")

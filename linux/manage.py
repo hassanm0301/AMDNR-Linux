@@ -18,6 +18,10 @@ RELEASES = {
     "e7ffc09696f1a4e06d26dc0c228d15a9c74a0e56e3d24be6a130a0f5e49968d8": "0.3.5.6",
     "5be27149c19442c4b022e993c679fdd17879fa68a5b472afa4521205e1e90695": "0.3.5.8",
 }
+# A style for the in-game Neural tab's first custom slot (Style slots > Apply), not a default: the
+# residual limit and edge guard that removed most of NR's edge halos and colour drift on lmxxf in
+# Black Myth: Wukong and Resident Evil Requiem (linux/quality). A slot sets only the keys it names.
+STYLE_SLOT = "limit=0.1500;edgeguard=1.0000;"
 RECORD = ".amdnr-linux-install.json"
 BACKUP = ".amdnr-linux-backup"
 
@@ -141,7 +145,8 @@ def stage(archive, compiler, output, build, rocm, daniel=None, optipatcher=None,
         ini = target / "OptiScaler.ini"
         lines = ini.read_text(encoding="utf-8-sig").splitlines()
         section = ""
-        settings = {("DlssNr", "Enabled"): "true", ("DlssNr", "NrBackend"): components["neural_runtime"]}
+        settings = {("DlssNr", "Enabled"): "true", ("DlssNr", "NrBackend"): components["neural_runtime"],
+                    ("DlssNr", "StyleSlot1"): STYLE_SLOT}
         if optipatcher:
             settings[("Plugins", "LoadAsiPlugins")] = "true"
         if model_e:
