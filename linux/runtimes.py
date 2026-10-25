@@ -127,12 +127,13 @@ HOST_BUILDS = (PRESR,)
 
 # Runtimes each pinned host drives, read from the pass digests each host
 # binary pins (host_drives). Used to list choices before the host is
-# downloaded; staging re-checks the actual binary. AMDNR 0.3.5.5R4 and 0.3.5.6
+# downloaded; staging re-checks the actual binary. AMDNR 0.3.5.5R4, 0.3.5.6 and 0.3.5.8
 # also pin 0.3.1, which is offered only with the pre-SR host, where it was tested.
 HOST_RUNTIMES = {
     "0.3.4.2": ("0.5.0", "0.4.3", "0.4.1", "0.4.0"),
     "0.3.5.5R4": ("0.6.0", "0.5.1", "0.5.0", "0.4.3", "0.4.1", "0.4.0"),
     "0.3.5.6": ("0.6.0", "0.5.1", "0.5.0", "0.4.3", "0.4.1", "0.4.0"),
+    "0.3.5.8": ("0.6.0", "0.5.1", "0.5.0", "0.4.3", "0.4.1", "0.4.0"),
     PRESR.host_version: ("0.3.1",),
 }
 
