@@ -1,3 +1,85 @@
+# Linux v0.3.5-preview — GPU recognition, a neural-rendering style, RE9 start-up
+
+Development **pre-release**. The HIP bridge now reports the GPU's PCI revision, so
+the AMDNR host recognises RX 9000 cards on Linux. Fresh installs come with a
+measured neural-rendering style in the overlay's first custom style slot.
+Resident Evil Requiem no longer freezes at start-up with REFramework, and the
+manager cleans up leftovers a mod manager has linked. The AMDNR host stays at
+0.3.5.6 and every AMDNR default is as upstream ships it.
+
+## New
+
+- **A neural-rendering style in custom slot 1.** In the AMDNR overlay's Neural tab,
+  open **Style slots** beside NR style and press **Apply** on slot 1. It sets a
+  residual limit of 0.15 and edge guard 1 (`StyleSlot1=limit=0.1500;edgeguard=1.0000;`
+  under `[DlssNr]`) and nothing else; **Clear** and **Store** work on it as on any
+  slot, and picking a named style afterwards overrides both values. For the
+  complete set that was measured, also choose **AMDNR soft** as the NR style and
+  turn off **Auto-exposure highlight cap**. Against the defaults, with lmxxf:
+  - Black Myth: Wukong benchmark: edge overshoot 0.54 → 0.39 (0.27 with NR off),
+    frame-to-frame flicker 3.83 → 3.34 (2.72 with NR off), 2 fps faster.
+  - Resident Evil Requiem: the default look's colour drift is gone (yellow police
+    tape had turned olive); overshoot 0.52 → 0.25, shimmer while panning
+    1.07 → 0.82 (0.68 with NR off). The slot's residual limit alone did most of it
+    there (0.19, 0.89).
+
+  The relight stays, a little milder. Fresh installs get the slot; an existing
+  installation keeps its `OptiScaler.ini`, so add the line above to its
+  `[DlssNr]` section.
+- **The host recognises the GPU.** Under Proton, DXVK reports PCI revision 0, so the
+  host's device table missed the RX 9070 XT ("GPU not in the device table") and
+  refused what it keeps for RX 9070-class GPUs, such as
+  `AmdLmxxfTierCap=native`. The bridge now fills in the real revision from
+  sysfs. The picture at default settings is unchanged.
+- **Steam launch option button.** For an installed game, a button beside Launch
+  in Steam shows the launch option line to paste, with a Copy button.
+- **Leftovers linked by a mod manager are cleaned up.** Remove leftover AMDNR
+  files now follows a mod manager's links (Amethyst's `overwrite` folder, for
+  example) and removes the linked AMDNR file with its link, and also removes the
+  manager's unlinked copies of leftover AMDNR files, in one pass. Another
+  OptiScaler build is never removed.
+- `manage.py stage` accepts the AMDNR 0.3.5.8 archive. The manager still installs
+  0.3.5.6.
+- `linux/quality` runs the Black Myth: Wukong Benchmark Tool unattended in a nested
+  KWin and compares neural-rendering settings frame by frame (see its README).
+
+## Fixed
+
+- **Resident Evil Requiem froze at start-up with REFramework.** REFramework
+  suspends the game's threads for its integrity check while the AMDNR host lists
+  the PC's adapters on a thread of its own, and the game stopped at a black
+  window. A fresh RE9 install now sets `[DlssNr] AmdAdapterList=false`, which only
+  leaves that list out of `amd_bridge.log`. For an existing RE9 installation, add
+  that line under `[DlssNr]` in its `OptiScaler.ini`.
+
+## Validation
+
+The complete GPU suite passed three times in a row on RX 9070 XT under
+Proton-Wineland 11.0 (2026-09-30) with the 0.3.5.6 package and this release's
+bridge. In every run:
+- the host identified the GPU as gfx1201 ("danielblnc yes, lmxxf yes: RDNA 4").
+  The new native-size runs at 2646x1108 → 3440x1440 with `AmdLmxxfTierCap=native`
+  had lmxxf run its 3440x1440 network.
+- the 720-frame NR-off/on host pipeline with lmxxf composed 597 fresh outputs in a
+  599-frame reporting window.
+- danielblnc 0.6.0 completed 716/716, 700/700 and 700/700 passes, with no
+  timeouts.
+- OptiPatcher 0.41 loaded in every host run.
+- the host verified the Model E receipt and HelixSR's network ran; its output
+  differed from FSR 3.1 on 16.6% of output channels. Model E was rebuilt from
+  HelixSR 1.8.1 and a local DLSS 310.7.0 to the same DLL as before (SHA-256
+  `11ed21a5…`).
+
+The only skip is Wineland's known shared-fence rewind limitation. All 355 Linux
+unit tests pass.
+
+The style slot's numbers come from linux/quality runs of Black Myth: Wukong's
+benchmark and from Resident Evil Requiem, both at 3440x1440 on the same card;
+the full write-ups are not part of the release. The RE9 start-up fix was
+checked twice with REFramework, in a nested KWin session. These are synthetic
+API and pipeline checks plus two image-quality comparisons; no new game
+compatibility or long-duration stability is claimed.
+
 # Linux v0.3.4-preview — Proton-CachyOS and Unreal launcher fixes
 
 Development **pre-release**. Neural rendering now starts under Proton-CachyOS,
