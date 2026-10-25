@@ -43,8 +43,11 @@ SEEDS = {
     # NVIDIA spoofing makes GTA V Enhanced stop with ERR_GFX_STATE.
     "3240220": {("Spoofing", "Dxgi"): "false"},
     # Resident Evil Requiem creates a 0x0 overlay swapchain the host never wraps,
-    # so the overlay menu and hotkeys have nothing to draw on.
-    "re9.exe": {("Menu", "OverlayMenu"): "false"},
+    # so the overlay menu and hotkeys have nothing to draw on. With REFramework,
+    # the host's adapter-list thread (0.3.5.1+) deadlocks start-up: REFramework
+    # suspends every thread for its integrity scan while that thread is creating
+    # a Vulkan instance. The list is only written to amd_bridge.log.
+    "re9.exe": {("Menu", "OverlayMenu"): "false", ("DlssNr", "AmdAdapterList"): "false"},
 }
 
 # Lower-case names found in protected games' folders.

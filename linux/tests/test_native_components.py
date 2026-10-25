@@ -331,7 +331,8 @@ class CompatibilityTests(unittest.TestCase):
     def test_seeds_by_app_id_and_executable(self):
         self.assertEqual(compatibility.seeds(self.game("3240220")), {("Spoofing", "Dxgi"): "false"})
         manual = self.game()
-        self.assertEqual(compatibility.seeds(manual, manual.exe_dir / "RE9.exe"), {("Menu", "OverlayMenu"): "false"})
+        self.assertEqual(compatibility.seeds(manual, manual.exe_dir / "RE9.exe"),
+                         {("Menu", "OverlayMenu"): "false", ("DlssNr", "AmdAdapterList"): "false"})
         self.assertEqual(compatibility.seeds(manual), {})
 
 
