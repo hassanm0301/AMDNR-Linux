@@ -1,3 +1,39 @@
+# Linux v0.3.5 — full release of the 0.3.5 previews
+
+The v0.3.5-preview work, now as a full release. The manager, the game wrapper,
+the HIP bridge and the patched graphics binaries are the same as in
+v0.3.5-preview; the AMDNR host stays at 0.3.5.6 and every AMDNR default is as
+upstream ships it. See v0.3.5-preview below for what that release changed: the
+host recognising RX 9000 GPUs, the neural-rendering style in custom slot 1, the
+Resident Evil Requiem start-up fix with REFramework and the leftover clean-up
+for mod-manager links.
+
+## Changed
+
+- The first full release since v0.2.1: it is not marked as a pre-release, so
+  GitHub lists it as the latest release and v0.2.1 managers offer it as an
+  update. Managers from the previews offer it too, since a full release sorts
+  after its previews.
+- The upstream AMDNR documentation in this repository follows AMDNR 0.3.5.8
+  Public View (README files, changelog, release status and launcher manifest).
+  The Linux manager does not read that manifest and still installs 0.3.5.6;
+  `manage.py stage` accepts the 0.3.5.8 archive, as before.
+
+## Validation
+
+The complete GPU suite passed three times in a row on RX 9070 XT under
+Proton-Wineland 11.0 (2026-09-30) with the 0.3.5.6 package and the
+v0.3.5-preview bridge. In every run the host identified the GPU as gfx1201 and
+lmxxf ran its 3440x1440 network at native size; the host pipeline composed
+changed output; danielblnc 0.6.0 completed every pass (700/700, 705/705 and
+700/700) with no timeouts; OptiPatcher loaded in every host run; and the host
+verified the Model E receipt, with HelixSR's output differing from FSR 3.1 on
+16.6% of output channels. The only skip is Wineland's known shared-fence rewind
+limitation. All 355 Linux unit tests pass.
+
+These are synthetic API and pipeline checks; no new game compatibility or
+long-duration stability is claimed beyond v0.3.5-preview.
+
 # Linux v0.3.5-preview — GPU recognition, a neural-rendering style, RE9 start-up
 
 Development **pre-release**. The HIP bridge now reports the GPU's PCI revision, so

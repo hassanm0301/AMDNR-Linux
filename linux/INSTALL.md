@@ -12,7 +12,7 @@ executing file as program** in its properties and open it. From a terminal:
 
 ```sh
 chmod +x AMDNR-Linux-Manager-*.AppImage
-./AMDNR-Linux-Manager-v0.3.5-preview-x86_64.AppImage
+./AMDNR-Linux-Manager-v0.3.5-x86_64.AppImage
 ```
 
 If the system cannot mount AppImages through FUSE, add
