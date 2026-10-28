@@ -1,0 +1,56 @@
+name: Release check
+
+# main only moves for a release. Every commit pushed to main must carry the
+# linux-v<VERSION> tag for the manager version it ships (push the tag together
+# with main), and that tag must get a published GitHub release.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Tag matches the manager version
+        id: tag
+        run: |
+          version=$(sed -n 's/^VERSION = "\(.*\)"$/\1/p' linux/native_launcher/__init__.py)
+          tag="linux-v$version"
+          if [ -z "$version" ]; then
+            echo "::error::No VERSION in linux/native_launcher/__init__.py"
+            exit 1
+          fi
+          tagged=$(git rev-parse -q --verify "refs/tags/$tag^{commit}" || true)
+          if [ -z "$tagged" ]; then
+            echo "::error::main moved to $GITHUB_SHA without a release: tag $tag does not exist. Release from develop and push main together with its tag."
+            exit 1
+          elif [ "$tagged" != "$GITHUB_SHA" ]; then
+            echo "::error::main moved to $GITHUB_SHA without a release: tag $tag points at $tagged. Bump VERSION and release from develop."
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Release is published
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          # The release is created right after the push, so allow time for
+          # its assets to upload.
+          for attempt in $(seq 1 120); do
+            if [ "$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null)" = "false" ]; then
+              echo "$TAG is published"
+              exit 0
+            fi
+            sleep 30
+          done
+          echo "::error::No published GitHub release for $TAG after 60 minutes"
+          exit 1

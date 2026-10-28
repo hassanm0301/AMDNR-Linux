@@ -539,6 +539,11 @@ external memory/semaphore handle type.
 
 ## Producing release assets
 
+Development happens on `develop`. `main` always matches the latest release: it
+only moves when a release is cut from `develop`, and the release commit is
+pushed together with its `linux-v<version>` tag. The `Release check` workflow
+fails for a commit on `main` without that tag or without a published release.
+
 The prebuilt add-on is assembled from an already tested package. Commit all
 source and documentation changes first, then run:
 
