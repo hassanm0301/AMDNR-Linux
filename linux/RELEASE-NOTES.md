@@ -1,3 +1,36 @@
+# Linux v0.3.6 — upstream AMDNR 0.3.5.8R documentation
+
+A documentation release. The manager, the game wrapper, the HIP bridge and the
+patched graphics binaries are the same as in v0.3.5; the AMDNR host stays at
+0.3.5.6 and every AMDNR default is as upstream ships it.
+
+## Changed
+
+- The upstream AMDNR documentation in this repository follows AMDNR 0.3.5.8R
+  Public View: the README files in every language and the launcher manifest,
+  which upstream now publishes encrypted. Upstream removed its release status
+  page and its report README, so they are gone here too. The Linux manager does
+  not read the manifest and still installs 0.3.5.6.
+- Releases now come from `main` only, and `main` always matches the latest
+  release. Development happens on `develop`; a `Release check` workflow fails
+  for a commit on `main` without its `linux-v<version>` tag and published
+  release.
+
+## Validation
+
+The complete GPU suite passed three times in a row on RX 9070 XT under
+Proton-Wineland 11.0 (2026-09-30) with the 0.3.5.6 package and the v0.3.5
+bridge. In every run the host identified the GPU as gfx1201 and lmxxf ran its
+3440x1440 network at native size; the host pipeline composed changed output;
+danielblnc 0.6.0 completed every pass (700/700, 700/700 and 717/717) with no
+timeouts; OptiPatcher loaded in every host run; and the host verified the
+Model E receipt, with HelixSR's output differing from FSR 3.1 on 16.6% of
+output channels. The only skip is Wineland's known shared-fence rewind
+limitation. All 355 Linux unit tests pass.
+
+These are synthetic API and pipeline checks; no new game compatibility or
+long-duration stability is claimed beyond v0.3.5.
+
 # Linux v0.3.5 — full release of the 0.3.5 previews
 
 The v0.3.5-preview work, now as a full release. The manager, the game wrapper,
