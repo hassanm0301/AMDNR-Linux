@@ -63,8 +63,12 @@ class SetupTests(unittest.TestCase):
         # Earlier pinned archives stay accepted for staging by hand.
         self.assertEqual(setup.manage.RELEASES["725cef9da0608621fe3233a7127e6511b9543061fcecaba8348b2c55c608d448"],
                          "0.3.5.5R4")
+        self.assertEqual(setup.manage.RELEASES["a11143327ede14ff4d7fe50ea0ce9d148320aeec4cd163f11c8c9973c944a97d"],
+                         "0.3.5.8R2")
         self.assertEqual(len(set(setup.manage.RELEASES.values())), len(setup.manage.RELEASES))
         self.assertIn(setup.RELEASE_VERSION, setup.runtimes.HOST_RUNTIMES)
+        # The default release still includes lmxxf in its main archive.
+        self.assertNotIn(setup.RELEASE_VERSION, setup.manage.LMXXF_ARCHIVES)
 
     def test_complete_binary_manifest(self):
         setup.verify_binaries()
@@ -154,6 +158,34 @@ class SetupTests(unittest.TestCase):
             with self.assertRaisesRegex(OSError, "network interrupted"):
                 setup.fetch_archive(self.cache)
         self.assertEqual(list(self.cache.iterdir()), [])
+
+    def test_separate_lmxxf_archive_is_downloaded_only_for_a_release_that_has_one(self):
+        with patch.object(setup.runtimes, "fetch") as fetch:
+            self.assertIsNone(setup.fetch_lmxxf(self.cache))
+        fetch.assert_not_called()
+        separate = setup.manage.LMXXF_ARCHIVES["0.3.5.8R2"]
+        with patch.object(setup, "RELEASE_VERSION", "0.3.5.8R2"), \
+                patch.object(setup.runtimes, "fetch", return_value=self.root / "lmxxf.zip") as fetch:
+            self.assertEqual(setup.fetch_lmxxf(self.cache), self.root / "lmxxf.zip")
+        fetch.assert_called_once_with(separate.url, separate.sha256, self.cache, separate.name, separate.size,
+                                      user_agent="AMDNR-Linux-setup")
+
+    def test_preparation_stages_the_separate_lmxxf_archive_with_the_amdnr_host(self):
+        lmxxf = self.root / "AMDNR-lmxxf.zip"
+        with patch.object(setup, "fetch_archive", return_value=self.root / "amdnr.zip"), \
+                patch.object(setup, "fetch_lmxxf", return_value=lmxxf) as fetch, \
+                patch.object(setup, "fetch_runtime"), patch.object(setup.manage, "stage") as stage:
+            setup.prepare(self.compiler, output=self.output, cache=self.cache)
+        fetch.assert_called_once_with(self.cache)
+        self.assertEqual(stage.call_args.args[0], self.root / "amdnr.zip")
+        self.assertEqual(stage.call_args.kwargs["lmxxf"], lmxxf)
+        with patch.object(setup, "fetch_lmxxf") as fetch, patch.object(setup, "fetch_runtime"), \
+                patch.object(setup.runtimes, "prepare_host", return_value=(setup.runtimes.PRESR, self.root / "presr.zip")), \
+                patch.object(setup.runtimes, "prepare_daniel", return_value=("runtime", "files")), \
+                patch.object(setup.manage, "stage") as stage:
+            setup.prepare(self.compiler, output=self.root / "other", cache=self.cache, host="presr")
+        fetch.assert_not_called()
+        self.assertNotIn("lmxxf", stage.call_args.kwargs)
 
     def test_existing_output_and_nested_cache_rejected(self):
         self.output.mkdir()
