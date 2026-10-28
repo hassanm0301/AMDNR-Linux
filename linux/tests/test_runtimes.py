@@ -72,6 +72,21 @@ class CatalogTests(unittest.TestCase):
         self.assertNotIn("0.3.1", runtimes.HOST_RUNTIMES["0.3.5.5R4"])
         self.assertNotIn("0.3.1", runtimes.HOST_RUNTIMES["0.3.5.6"])
 
+    def test_every_amdnr_release_lists_runtimes_and_separate_lmxxf_archives_are_pinned(self):
+        for version in manage.RELEASES.values():
+            self.assertIn(version, runtimes.HOST_RUNTIMES)
+            self.assertNotIn("0.3.1", runtimes.HOST_RUNTIMES[version])
+        # 0.3.5.8R2's host pins the same pass digests as 0.3.5.6.
+        self.assertEqual(runtimes.HOST_RUNTIMES["0.3.5.8R2"], runtimes.HOST_RUNTIMES["0.3.5.6"])
+        self.assertEqual(set(manage.LMXXF_ARCHIVES), {"0.3.5.8R2"})
+        for version, separate in manage.LMXXF_ARCHIVES.items():
+            self.assertIn(version, manage.RELEASES.values())
+            self.assertRegex(separate.sha256, r"^[0-9a-f]{64}$")
+            self.assertEqual(separate.version, version)
+            self.assertEqual(separate.url, "https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/"
+                                           f"Alpha{version}/{separate.name}")
+            self.assertEqual(separate.name, f"AMDNR-lmxxf-{version}.zip")
+
     def test_lookup_rejects_unknown_versions(self):
         self.assertEqual(runtimes.daniel_runtime("0.5.1").pass_sha256[:8], "493b4a3b")
         self.assertEqual(runtimes.optipatcher().version, runtimes.OPTIPATCHER[0].version)
@@ -276,6 +291,62 @@ class StageComponentTests(unittest.TestCase):
         self.assertIn("do not share or upload", (staged / "amdnr-linux/SOURCE.txt").read_text())
         with self.assertRaisesRegex(ValueError, "cannot load Model E"):
             self.stage(b"MZ older host", model_e=(folder, details))
+
+    def stage_split(self, lmxxf_members, give=True, pinned=None):
+        """Stage a release laid out like 0.3.5.8R2: lmxxf is a second archive on the release."""
+        count = len(list(self.root.glob("split-*.zip")))
+        archive, lmxxf = self.root / f"split-{count}.zip", self.root / f"split-{count}-lmxxf.zip"
+        with zipfile.ZipFile(archive, "w") as release:
+            release.writestr("OptiScaler.ini", "[DlssNr]\nEnabled=false\n")
+            release.writestr("OptiScaler.dll", b"MZ host")
+            release.writestr("OptiScaler\\libxess.dll", b"xess")
+            release.writestr("Licenses/AMDNR_NOTICE.txt", "main notice")
+            release.writestr("README.md", "docs")
+        with zipfile.ZipFile(lmxxf, "w") as component:
+            for name, data in lmxxf_members.items():
+                component.writestr(name, data)
+        separate = runtimes.Download(lmxxf.name, "test", "https://example.invalid/" + lmxxf.name,
+                                     pinned or manage.sha(lmxxf), lmxxf.stat().st_size)
+        staged = self.root / f"staged-{archive.stem}"
+        with patch.dict(manage.RELEASES, {manage.sha(archive): "test"}), \
+                patch.dict(manage.LMXXF_ARCHIVES, {"test": separate}):
+            manage.stage(archive, self.compiler, staged, self.build, None, lmxxf=lmxxf if give else None)
+        return staged
+
+    def lmxxf_members(self, **changes):
+        members = {"LmxxfNrRuntime.dll": b"MZ lmxxf", "LmxxfNrRuntime.pak": b"weights",
+                   "Licenses/lmxxf_LICENSE.txt": "MIT", "Licenses/AMDNR_NOTICE.txt": "component notice",
+                   "README.txt": "component readme", "R2-UPDATE.txt": "notes"}
+        members.update(changes)
+        return {name: data for name, data in members.items() if data is not None}
+
+    def test_split_release_takes_lmxxf_from_its_separate_archive(self):
+        staged = self.stage_split(self.lmxxf_members())
+        top = sorted(path.relative_to(staged).as_posix() for path in staged.rglob("*")
+                     if path.is_file() and "amdnr-linux" not in path.parts)
+        self.assertEqual(top, sorted([
+            "winmm.dll", "OptiScaler.ini", "OptiScaler/libxess.dll", "LmxxfNrRuntime.dll", "LmxxfNrRuntime.pak",
+            "Licenses/AMDNR_NOTICE.txt", "Licenses/lmxxf_LICENSE.txt", "d3d12.dll", "d3d12core.dll",
+            "d3dcompiler_47.dll"]))
+        self.assertEqual((staged / "LmxxfNrRuntime.pak").read_bytes(), b"weights")
+        self.assertEqual((staged / "Licenses/AMDNR_NOTICE.txt").read_text(), "main notice")
+        self.assertRegex((staged / "OptiScaler.ini").read_text(), r"(?m)^NrBackend=lmxxf$")
+        components = json.loads((staged / "amdnr-linux/components.json").read_text())
+        self.assertEqual(components, {"neural_runtime": "lmxxf", "daniel": None, "optipatcher": None})
+        source = (staged / "amdnr-linux/SOURCE.txt").read_text()
+        self.assertIn("Host/runtime: AMDNR test, ", source)
+        self.assertRegex(source, r"(?m)^lmxxf archive: https://example\.invalid/split-0-lmxxf\.zip, SHA-256 [0-9a-f]{64}$")
+
+    def test_split_release_needs_its_pinned_lmxxf_archive(self):
+        cases = ((dict(give=False), "ships lmxxf as a separate archive"),
+                 (dict(pinned="0" * 64), "checksum mismatch"),
+                 (dict(lmxxf_members=self.lmxxf_members(**{"LmxxfNrRuntime.pak": None})), "does not contain"))
+        for options, message in cases:
+            with self.subTest(message), self.assertRaisesRegex(ValueError, message):
+                self.stage_split(**{"lmxxf_members": self.lmxxf_members(), **options})
+        with self.assertRaisesRegex(ValueError, "has no separate lmxxf archive"):
+            self.stage(b"MZ host", lmxxf=self.root / "split-0-lmxxf.zip")
+        self.assertFalse(any(re.match(r"staged-", path.name) for path in self.root.iterdir()))
 
     def stage_alternate(self, members, **components):
         """Stage an archive laid out like the pre-SR release, under a test digest."""

@@ -110,6 +110,16 @@ def fetch_archive(cache):
             pending.unlink(missing_ok=True)
 
 
+def fetch_lmxxf(cache):
+    """The release's separate lmxxf archive, or None when the main archive includes lmxxf."""
+    separate = manage.LMXXF_ARCHIVES.get(RELEASE_VERSION)
+    if separate is None:
+        return None
+    print(f"Downloading pinned AMDNR {RELEASE_VERSION} lmxxf runtime.", flush=True)
+    return runtimes.fetch(separate.url, separate.sha256, cache, separate.name, separate.size,
+                          user_agent="AMDNR-Linux-setup")
+
+
 def fetch_runtime(output, cache):
     spec = importlib.util.spec_from_file_location("amdnr_fetch_rocm", ROOT / "fetch-rocm.py")
     module = importlib.util.module_from_spec(spec)
@@ -123,7 +133,8 @@ def prepare(compiler, archive=None, output=None, cache=None, daniel=None, optipa
     plugin version (or True for the newest). Both are downloaded from their
     publishers, verified, and staged only when requested. host: None for the
     AMDNR release, or an alternate host build key ("presr"), which needs
-    danielblnc's runtime and defaults to the newest one it drives.
+    danielblnc's runtime and defaults to the newest one it drives. An AMDNR
+    release whose lmxxf runtime is a separate archive has that downloaded too.
 
     model_e: also stage Model E (HelixSR), built on this PC by HelixSR's own
     setup from NVIDIA's DLSS DLL: dlss names a local copy, otherwise
@@ -171,6 +182,7 @@ def prepare(compiler, archive=None, output=None, cache=None, daniel=None, optipa
         archive = runtimes.prepare_host(build.key, cache)[1]
     elif archive is None:
         archive = fetch_archive(cache)
+    lmxxf = fetch_lmxxf(cache) if build is None else None
     # Always extract a fresh runtime from verified package archives. A mutable
     # runtime from a previous preparation is never silently trusted or reused.
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -186,6 +198,8 @@ def prepare(compiler, archive=None, output=None, cache=None, daniel=None, optipa
             components["optipatcher"] = runtimes.prepare_optipatcher(optipatcher, cache)
         if built is not None:
             components["model_e"] = built
+        if lmxxf is not None:
+            components["lmxxf"] = lmxxf
         manage.stage(archive, compiler, output, ROOT / "build", runtime, **components)
     print(f"Prepared {output}\nNo game files were changed. Install with linux/manage.py install.")
     return output

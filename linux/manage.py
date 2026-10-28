@@ -17,7 +17,17 @@ RELEASES = {
     "725cef9da0608621fe3233a7127e6511b9543061fcecaba8348b2c55c608d448": "0.3.5.5R4",
     "e7ffc09696f1a4e06d26dc0c228d15a9c74a0e56e3d24be6a130a0f5e49968d8": "0.3.5.6",
     "5be27149c19442c4b022e993c679fdd17879fa68a5b472afa4521205e1e90695": "0.3.5.8",
+    "a11143327ede14ff4d7fe50ea0ce9d148320aeec4cd163f11c8c9973c944a97d": "0.3.5.8R2",
 }
+# From 0.3.5.8R1 the lmxxf runtime is a separate archive on the same GitHub
+# release; the host still loads both files from beside itself.
+LMXXF_ARCHIVES = {
+    "0.3.5.8R2": runtimes.Download(
+        "AMDNR-lmxxf-0.3.5.8R2.zip", "0.3.5.8R2",
+        "https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha0.3.5.8R2/AMDNR-lmxxf-0.3.5.8R2.zip",
+        "58ccdf75c1caace59826433c77a23a00c2c77dc9842868917bfc3be9a10f9607", 765998225),
+}
+LMXXF_FILES = ("LmxxfNrRuntime.dll", "LmxxfNrRuntime.pak")
 # A style for the in-game Neural tab's first custom slot (Style slots > Apply), not a default: the
 # residual limit and edge guard that removed most of NR's edge halos and colour drift on lmxxf in
 # Black Myth: Wukong and Resident Evil Requiem (linux/quality). A slot sets only the keys it names.
@@ -43,11 +53,32 @@ def write_json(path, value):
     temp.write_text(json.dumps(value, indent=2) + "\n")
     temp.replace(path)
 
-def stage(archive, compiler, output, build, rocm, daniel=None, optipatcher=None, model_e=None):
+def extract(archive, target, wanted):
+    """Copy the archive members wanted(name) accepts into target; returns their names."""
+    copied = []
+    with zipfile.ZipFile(archive) as package:
+        for entry in package.infolist():
+            if entry.is_dir():
+                continue
+            # Windows-made archives may separate folders with backslashes;
+            # safe_path still rejects absolute or parent-relative results.
+            name = entry.filename.replace("\\", "/")
+            if not wanted(name):
+                continue
+            name = "winmm.dll" if name == "OptiScaler.dll" else name
+            destination = safe_path(target, name)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with package.open(entry) as source, destination.open("wb") as sink:
+                shutil.copyfileobj(source, sink)
+            copied.append(name)
+    return copied
+
+def stage(archive, compiler, output, build, rocm, daniel=None, optipatcher=None, model_e=None, lmxxf=None):
     """Stage a package. daniel is (Runtime, directory of verified files),
     optipatcher is (Plugin, verified .asi path) and model_e is the (folder,
     details) of a Model E built on this PC; all come from runtimes.
-    archive is a pinned AMDNR release or a pinned alternate host build."""
+    archive is a pinned AMDNR release or a pinned alternate host build;
+    lmxxf is that release's separate lmxxf archive, for releases that have one."""
     if output.exists():
         raise ValueError(f"Output already exists: {output}")
     release_sha = sha(archive)
@@ -62,6 +93,14 @@ def stage(archive, compiler, output, build, rocm, daniel=None, optipatcher=None,
     else:
         host_name = f"AMDNR {version}"
         release_url = f"https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha{version}/AMDNR-v{version}.zip"
+    separate = None if alternate else LMXXF_ARCHIVES.get(version)
+    # Always staged with the AMDNR host: switching runtimes later rewrites only NrBackend.
+    if separate and lmxxf is None:
+        raise ValueError(f"{host_name} ships lmxxf as a separate archive; also give {separate.name}.")
+    if lmxxf is not None and not separate:
+        raise ValueError(f"{host_name} has no separate lmxxf archive.")
+    if separate and sha(lmxxf) != separate.sha256:
+        raise ValueError(f"Expected the pinned, unmodified {separate.name}; checksum mismatch.")
     inputs = [compiler, build / "d3d12.dll", build / "d3d12core.dll",
               build / "x86_64-unix/amdhip64_7.so", build / "x86_64-windows/amdhip64_7.dll",
               build / "x86_64-unix/libamdnr_signal_guard.so"]
@@ -74,25 +113,17 @@ def stage(archive, compiler, output, build, rocm, daniel=None, optipatcher=None,
     with tempfile.TemporaryDirectory(prefix="amdnr-stage-", dir=output.parent) as temp:
         target = Path(temp) / "package"
         target.mkdir()
-        with zipfile.ZipFile(archive) as package:
-            for entry in package.infolist():
-                if entry.is_dir():
-                    continue
-                # Windows-made archives may separate folders with backslashes;
-                # safe_path still rejects absolute or parent-relative results.
-                name = entry.filename.replace("\\", "/")
-                if alternate:
-                    wanted = name in alternate.files or name.startswith(alternate.folders)
-                else:
-                    wanted = (name in ("OptiScaler.dll", "OptiScaler.ini", "LmxxfNrRuntime.dll", "LmxxfNrRuntime.pak")
-                              or name.startswith(("OptiScaler/", "Licenses/")))
-                if not wanted:
-                    continue
-                name = "winmm.dll" if name == "OptiScaler.dll" else name
-                destination = safe_path(target, name)
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                with package.open(entry) as source, destination.open("wb") as sink:
-                    shutil.copyfileobj(source, sink)
+        if alternate:
+            staged = extract(archive, target, lambda name: name in alternate.files or name.startswith(alternate.folders))
+        else:
+            staged = extract(archive, target, lambda name: name in ("OptiScaler.dll", "OptiScaler.ini", *LMXXF_FILES)
+                             or name.startswith(("OptiScaler/", "Licenses/")))
+        if separate:
+            # Its licence files repeat the main archive's, which are kept.
+            extract(lmxxf, target, lambda name: name in LMXXF_FILES or
+                    (name.startswith("Licenses/") and name not in staged))
+            if not all((target / name).is_file() for name in LMXXF_FILES):
+                raise ValueError(f"{separate.name} does not contain the lmxxf runtime.")
         components = {"neural_runtime": "lmxxf", "daniel": None, "optipatcher": None}
         if model_e:
             if alternate or not runtimes.host_loads_model_e(target / "winmm.dll"):
@@ -197,7 +228,8 @@ def stage(archive, compiler, output, build, rocm, daniel=None, optipatcher=None,
                f"{alternate.homepage}), {release_url}\n" if alternate else
                f"Host/runtime: {host_name}, {release_url}\n")
             + f"Archive SHA-256: {release_sha}\n"
-            "Linux bridge: GPL-3.0-or-later; vkd3d-proton patch: LGPL-2.1-or-later.\n"
+            + (f"lmxxf archive: {separate.url}, SHA-256 {separate.sha256}\n" if separate else "")
+            + "Linux bridge: GPL-3.0-or-later; vkd3d-proton patch: LGPL-2.1-or-later.\n"
             "Bridge source and graphics patch: amdnr-linux/source/linux.\n"
             "The shader compiler is supplied from the user's own installation.\n"
             + (f"Neural runtime: danielblnc {components['daniel']['version']} (DLSS-NR on AMD by Daniel Blanco, "
@@ -371,6 +403,8 @@ def main():
     s.add_argument("--output", type=Path, required=True)
     s.add_argument("--build", type=Path, default=ROOT / "build")
     s.add_argument("--rocm", type=Path)
+    s.add_argument("--lmxxf-archive", type=Path, metavar="ZIP",
+                   help="The release's separate, pinned AMDNR-lmxxf-<version>.zip (0.3.5.8R2 and newer)")
     s.add_argument("--daniel-runtime", type=Path, metavar="ZIP",
                    help="Pinned, unmodified danielblnc vX.Y.Z-Runtime.zip; selects NrBackend=daniel")
     s.add_argument("--optipatcher", type=Path, metavar="ASI", help="Pinned, unmodified OptiPatcher_vX.YY.asi")
@@ -411,7 +445,8 @@ def main():
             model_e = runtimes.load_model_e(args.model_e) if args.model_e else None
             if args.model_e and model_e is None:
                 raise ValueError(f"Not a Model E built by setup.py for HelixSR {runtimes.HELIXSR.version}: {args.model_e}")
-            stage(args.archive, args.compiler, args.output, args.build, args.rocm, daniel, optipatcher, model_e)
+            stage(args.archive, args.compiler, args.output, args.build, args.rocm, daniel, optipatcher, model_e,
+                  args.lmxxf_archive)
     elif args.command == "install":
         install(args.package.resolve(), args.game, args.proxy, args.exe)
     elif args.command == "switch-proxy":

@@ -109,6 +109,13 @@ The stage command accepts these checksum-pinned upstream archives:
 | [0.3.4.2](https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha0.3.4.2/AMDNR-v0.3.4.2.zip) | `013081a3a225ef927d96d8996b64910d62f796022b20bef6a6ea102670b0cb63` |
 | [0.3.5.5R4](https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha0.3.5.5R4/AMDNR-v0.3.5.5R4.zip) | `725cef9da0608621fe3233a7127e6511b9543061fcecaba8348b2c55c608d448` |
 | [0.3.5.6](https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha0.3.5.6/AMDNR-v0.3.5.6.zip) | `e7ffc09696f1a4e06d26dc0c228d15a9c74a0e56e3d24be6a130a0f5e49968d8` |
+| [0.3.5.8](https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha0.3.5.8/AMDNR-v0.3.5.8.zip) | `5be27149c19442c4b022e993c679fdd17879fa68a5b472afa4521205e1e90695` |
+| [0.3.5.8R2](https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha0.3.5.8R2/AMDNR-v0.3.5.8R2.zip) | `a11143327ede14ff4d7fe50ea0ce9d148320aeec4cd163f11c8c9973c944a97d` |
+| [0.3.5.8R2 lmxxf](https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha0.3.5.8R2/AMDNR-lmxxf-0.3.5.8R2.zip) | `58ccdf75c1caace59826433c77a23a00c2c77dc9842868917bfc3be9a10f9607` |
+
+From 0.3.5.8R2 the lmxxf runtime (`LmxxfNrRuntime.dll` and `.pak`) is a separate
+archive on the same release. Give it with `--lmxxf-archive`; staging refuses
+0.3.5.8R2 without it, and places both files beside the host as before.
 
 `setup.py` and the manager download 0.3.5.6. Its archive has the same files as
 0.3.5.5R4 and an identical `OptiScaler.ini`; the host, the lmxxf runtime, its
