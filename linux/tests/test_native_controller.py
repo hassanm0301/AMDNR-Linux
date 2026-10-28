@@ -100,6 +100,18 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(self.config.read_bytes(), self.config_before)
         self.assertEqual(backend_fixture.snapshot(self.game_dir), self.fixture.initial)
 
+    def test_wrapper_failure_is_shown_with_the_game(self):
+        self.app.operate("install", self.game)
+        self.assertFalse(any("last launch" in item["text"] for item in self.app.inspect(self.game)["notices"]))
+        (self.game_dir / "amdnr-linux/launch.log").write_text(
+            "2026-10-21T08:12:00+00:00\nLaunch setup failed: A different HIP DLL is already installed: /pfx/amdhip64_7.dll\n")
+        notice = self.app.inspect(self.game)["notices"][0]
+        self.assertEqual(notice["level"], "warning")
+        self.assertRegex(notice["text"], r"^The last launch stopped before the game started \(2026-10-2[01] \d\d:\d\d\): "
+                                         r"A different HIP DLL is already installed: /pfx/amdhip64_7\.dll$")
+        self.assertEqual(controller.launch_failure_text(dict(time="unreadable", message="error")),
+                         "The last launch stopped before the game started (unreadable): error")
+
     def test_launch_option_follows_steam_after_install(self):
         quoted = shlex.quote(str((self.game_dir / "amdnr-linux/run.sh").resolve()))
         self.assertNotIn("launch_option", self.app.inspect(self.game))

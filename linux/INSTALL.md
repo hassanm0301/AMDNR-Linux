@@ -325,6 +325,7 @@ and management, not a new neural model.
 | Duplicate copies across library drives | The manager follows Steam’s current library index. If Steam reports multiple owners, resolve the duplicate in Steam and rescan before installing. |
 | Wrong or ambiguous executable folder | Use Choose game executable. Stellar Blade uses `SB/Binaries/Win64`; Witcher 3 DX12 uses `bin/x64_dx12`. |
 | Installation reports a conflict | Preserve the named file or settings; resolve the conflict before retrying. Conflicting DLL-injection mods may need their own uninstall process. |
+| Game does not start at all after installing | The wrapper stopped before the game. The manager shows its reason above the game's status, and `amdnr-linux/launch.log` keeps it. "A different HIP DLL is already installed" names a file in the prefix's `system32` that is not AMDNR's; move it away and launch again. A bridge an earlier AMDNR release left there is renamed to `….bak` instead. |
 | Wrapper says its Python runtime is missing | Open the complete portable launcher and Repair the game. |
 | Saves seem missing | Launch through the original Steam entry and prefix. Do not directly run the `.exe`. |
 | Game crashes or no neural frames appear | Check Proton version, GPU access and compiler; compare with `[DlssNr] Enabled=false` in `OptiScaler.ini`. |

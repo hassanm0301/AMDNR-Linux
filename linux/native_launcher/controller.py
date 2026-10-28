@@ -2,6 +2,7 @@
 """Application orchestration. No dependency on the upstream Windows launcher."""
 from contextlib import nullcontext
 from dataclasses import replace
+from datetime import datetime
 import fcntl
 import hashlib
 import json
@@ -50,6 +51,15 @@ def file_hash(path):
 
 def version_tuple(text):
     return version_key(text.removeprefix("linux-v")) if isinstance(text, str) else None
+
+
+def launch_failure_text(failure):
+    """Say why the wrapper stopped the last launch; Steam only shows that the game did not start."""
+    try:
+        when = datetime.fromisoformat(failure["time"]).astimezone().strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        when = failure["time"]
+    return f"The last launch stopped before the game started ({when}): {failure['message']}"
 
 
 def available_release(current=VERSION):
@@ -285,6 +295,8 @@ class Controller:
         result["notices"] = (compatibility.notices(game, managed=result.get("installed", False),
                                                    leftovers=(result.get("leftovers") or {}).get("remove", ()))
                              + stores.notices(game, installed=result.get("installed", False)))
+        if result.get("launch_failure"):
+            result["notices"].insert(0, dict(level="warning", text=launch_failure_text(result["launch_failure"])))
         result["component_choices"] = self.component_choices(game, result)
         if result.get("installed") and not stores.store_name(game):
             result["launch_option"] = self.launch_option(game)

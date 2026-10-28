@@ -253,7 +253,14 @@ native shader compiler into that prefix's `system32`. It backs up the old compil
 to overwrite an unrelated HIP DLL. The bridge is stored as `AMDHIP64_7.DLL`:
 Proton-CachyOS deletes `system32/amdhip64_7.dll` on every start unless its ZLUDA
 mode is on, and Wine finds the file whatever its case. A lowercase bridge left by
-an earlier wrapper is removed at the next launch, Update or Repair. Native DXVK DXGI must remain enabled: Wine's
+an earlier wrapper is removed at the next launch, Update or Repair. If a game
+folder was deleted without Uninstall, its journal is gone but its bridge stays in
+the prefix; the wrapper recognises the bridges of published releases, renames
+such a file to `<name>.<hash>.bak` beside it and notes that in
+`amdnr-linux/launch.log`. A prefix holds one bridge, so when two games share a
+prefix, the newer one's wrapper sets the other's aside the same way. The manager
+then asks to Update the other game, which gives both the same bridge, and
+Uninstall leaves the bridge the other game uses. Native DXVK DXGI must remain enabled: Wine's
 builtin DXGI is incompatible with the vkd3d-proton device used here.
 
 Enable the game's supported upscaler so OptiScaler receives its frames. The
@@ -569,6 +576,9 @@ their hashes and the fork commit, and creates a separate complete corresponding
 graphics-source archive. It includes dependency notices with the binaries and
 excludes downloaded upstream assets, shader compilers, ROCm binaries, prefixes,
 game files, and logs. Publish both archives, `INSTALL.md`, and `SHA256SUMS` together.
+It also refuses a HIP bridge missing from `RELEASED_HIP` in `linux/launch.py`:
+add its SHA-256 there and commit before packaging, so later wrappers recognise a
+copy that a game folder deleted without Uninstall leaves in its prefix.
 See [RELEASE-LICENSES.md](RELEASE-LICENSES.md) for distribution details.
 
 ## Troubleshooting

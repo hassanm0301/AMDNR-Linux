@@ -424,6 +424,29 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(result["status"], "conflict")
         self.assertTrue(any("modified outside" in issue for issue in result["conflicts"]))
 
+    def test_last_wrapper_failure_is_reported_until_the_installation_changes(self):
+        self.backend.install(self.game, self.a)
+        self.assertIsNone(self.backend.inspect(self.game)["launch_failure"])
+        log = self.game / "amdnr-linux/launch.log"
+        log.write_text("2026-10-21T08:12:00+00:00\nLaunch setup failed: A different HIP DLL is already installed: "
+                       "/prefix/drive_c/windows/system32/amdhip64_7.dll\n")
+        result = self.backend.inspect(self.game)
+        self.assertEqual(result["launch_failure"], dict(
+            time="2026-10-21T08:12:00+00:00",
+            message="A different HIP DLL is already installed: /prefix/drive_c/windows/system32/amdhip64_7.dll"))
+        self.assertEqual(result["installation_health"], "healthy")  # Repair would not change the prefix.
+        # A failure from before the last Install, Repair or Update may no longer apply.
+        record = (self.game / self.backend.manage.RECORD).stat().st_mtime_ns
+        os.utime(log, ns=(record - 10**9, record - 10**9))
+        self.assertIsNone(self.backend.inspect(self.game)["launch_failure"])
+        log.write_text("2026-10-21T08:15:00+00:00\nWrapper prepared. Handing control to the game runner.\n")
+        self.assertIsNone(self.backend.inspect(self.game)["launch_failure"])
+        log.unlink()
+        outside = self.root / "outside launch.log"
+        outside.write_text("2026-10-21T08:12:00+00:00\nLaunch setup failed: not this game's\n")
+        log.symlink_to(outside)
+        self.assertIsNone(self.backend.inspect(self.game)["launch_failure"])
+
     def test_startup_diagnostics_are_bounded_historical_and_do_not_follow_links(self):
         self.backend.install(self.game, self.a)
         empty = self.backend.diagnostics(self.game)
@@ -574,6 +597,103 @@ class BackendTests(unittest.TestCase):
             self.backend.update(self.game, self.b)
         self.assertEqual(snapshot(self.game), before)
         self.assertEqual(compiler.read_bytes(), b"user replacement compiler")
+
+    def released(self, *packages):
+        """Publish the packages' bridges, as launch.py RELEASED_HIP lists each release's."""
+        bridges = {hashlib.sha256((package / "amdnr-linux/x86_64-windows/amdhip64_7.dll").read_bytes()).hexdigest():
+                   package.name for package in packages}
+        published = patch.dict(self.backend.launch.RELEASED_HIP, bridges)
+        published.start()
+        self.addCleanup(published.stop)
+
+    def shared_prefix(self):
+        """This game has release A, a second game in its prefix the launcher's release B.
+
+        A's bridge is published, so B's wrapper sets it aside and installs its
+        own, and A's wrapper then stops the launch.
+        """
+        for package in (self.a, self.b):
+            (package / "d3dcompiler_47.dll").write_bytes(b"the same native compiler")
+        self.backend.addon_version = "0.3.4-preview"
+        self.backend.install(self.game, self.a)
+        prefix, _ = self.prefix()
+        self.backend.addon_version = "0.3.5-preview"
+        other = self.root / "Second game"
+        other.mkdir()
+        self.backend.install(other, self.b)
+        notes = self.backend.launch.prepare_prefix(other / "amdnr-linux", prefix)
+        self.assertTrue(any("Set aside" in note for note in notes))
+        with self.assertRaisesRegex(ValueError, "managed prefix file changed"):
+            self.backend.launch.prepare_prefix(self.game / "amdnr-linux", prefix)
+        return prefix, prefix / "drive_c/windows/system32/AMDHIP64_7.DLL", other
+
+    def test_update_takes_back_a_bridge_another_installation_replaced(self):
+        self.released(self.a, self.b)
+        prefix, bridge, other = self.shared_prefix()
+        result = self.backend.inspect(self.game)
+        self.assertEqual(result["conflicts"], [])
+        self.assertEqual(result["status"], "needs_repair")
+        self.assertTrue(result["update_needed"])
+        self.assertTrue(any(str(bridge) in issue and "Update this game" in issue for issue in result["health_issues"]))
+        self.assertEqual(self.backend.inspect(other)["installation_health"], "healthy")
+        # Repair keeps A's release; only Update brings it to the bridge both can use.
+        with self.assertRaisesRegex(ConflictError, "Use Update"):
+            self.backend.repair(self.game, self.b)
+        self.backend.update(self.game, self.b)
+        self.assertEqual(bridge.read_bytes(), b"B amdnr-linux/x86_64-windows/amdhip64_7.dll")
+        for game in (self.game, other):
+            self.assertEqual(self.backend.inspect(game)["installation_health"], "healthy")
+            self.backend.launch.prepare_prefix(game / "amdnr-linux", prefix)
+        # A newer release on one game is the same case for the other, so updating both converges.
+        newer = self.package("C")
+        (newer / "d3dcompiler_47.dll").write_bytes(b"the same native compiler")
+        self.released(newer)
+        self.backend.addon_version = "0.3.6-preview"
+        self.backend.update(self.game, newer)
+        self.assertEqual(bridge.read_bytes(), b"C amdnr-linux/x86_64-windows/amdhip64_7.dll")
+        self.assertTrue(self.backend.inspect(other)["update_needed"])
+        self.backend.update(other, newer)
+        for game in (self.game, other):
+            self.assertEqual(self.backend.inspect(game)["installation_health"], "healthy")
+            self.backend.launch.prepare_prefix(game / "amdnr-linux", prefix)
+
+    def test_uninstall_leaves_the_bridge_another_installation_replaced(self):
+        self.released(self.a)
+        # A launcher run from a source checkout knows the bridge it built.
+        build = self.release / "linux/build/x86_64-windows/amdhip64_7.dll"
+        build.parent.mkdir(parents=True)
+        shutil.copy2(self.b / "amdnr-linux/x86_64-windows/amdhip64_7.dll", build)
+        prefix, bridge, other = self.shared_prefix()
+        self.assertTrue(self.backend.inspect(self.game)["update_needed"])
+        self.backend.uninstall(self.game)
+        self.assertEqual(snapshot(self.game), self.initial)
+        self.assertEqual(bridge.read_bytes(), b"B amdnr-linux/x86_64-windows/amdhip64_7.dll")
+        self.backend.launch.prepare_prefix(other / "amdnr-linux", prefix)
+        self.assertEqual(self.backend.inspect(other)["installation_health"], "healthy")
+
+    def test_other_changes_to_a_journalled_bridge_stay_a_conflict(self):
+        self.released(self.a, self.b)
+        self.backend.install(self.game, self.a)
+        prefix, compiler = self.prefix()
+        bridge = compiler.parent / "AMDHIP64_7.DLL"
+        published = (self.b / "amdnr-linux/x86_64-windows/amdhip64_7.dll").read_bytes()
+        # Only the bridge's own names can hold another installation's bridge.
+        for path, content in ((bridge, b"another HIP runtime"), (compiler, published)):
+            with self.subTest(path=path.name):
+                original = path.read_bytes()
+                path.write_bytes(content)
+                result = self.backend.inspect(self.game)
+                self.assertEqual(result["status"], "conflict")
+                self.assertFalse(result["update_needed"])
+                self.assertTrue(any("modified outside" in conflict for conflict in result["conflicts"]))
+                before, prefix_before = snapshot(self.game), snapshot(prefix)
+                with self.assertRaisesRegex(ConflictError, "modified outside"):
+                    self.backend.update(self.game, self.b)
+                with self.assertRaisesRegex(ConflictError, "modified outside"):
+                    self.backend.uninstall(self.game)
+                self.assertEqual(snapshot(self.game), before)
+                self.assertEqual(snapshot(prefix), prefix_before)
+                path.write_bytes(original)
 
     def test_obsolete_files_only_removed_if_owned_and_unchanged(self):
         (self.a / "obsolete.dll").write_bytes(b"old addon")

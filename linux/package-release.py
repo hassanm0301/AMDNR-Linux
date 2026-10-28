@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Package tested Linux binaries and corresponding source without upstream assets."""
 import argparse
+import ast
 import gzip
 import hashlib
 import json
@@ -40,6 +41,14 @@ def copy(source, target):
         raise ValueError(f"Expected a regular file: {source}")
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, target)
+
+
+def released_bridges():
+    """The bridge hashes the wrapper recognises once an install's journal is lost (launch.py RELEASED_HIP)."""
+    for node in ast.parse((ROOT / "linux/launch.py").read_text()).body:
+        if isinstance(node, ast.Assign) and any(getattr(target, "id", None) == "RELEASED_HIP" for target in node.targets):
+            return ast.literal_eval(node.value)
+    raise ValueError("linux/launch.py does not list the released HIP bridges")
 
 
 def validation_metadata(report_path, package):
@@ -105,6 +114,10 @@ def main():
     if args.output.exists():
         parser.error("Output directory already exists")
     validation = validation_metadata(args.validation_report, args.package)
+    bridge = sha(args.package / BINARIES["x86_64-windows/amdhip64_7.dll"])
+    if bridge not in released_bridges():
+        parser.error(f"Add this release's HIP bridge ({bridge}) to RELEASED_HIP in linux/launch.py and commit it, "
+                     "so later wrappers recognise a copy left in a prefix")
     source = args.vkd3d_source.resolve()
     if git(source, "rev-parse", "HEAD").decode().strip() != VKD3D_REVISION:
         parser.error("vkd3d-proton checkout is not at the pinned revision")
