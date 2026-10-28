@@ -27,6 +27,7 @@ RELEASED_HIP = {
     "f25e4bb523accceef3b77c809159f61cc1139f4b2d2f69fadb2290bfa99b3287": "v0.1.0 to v0.2.1",
     "be0a5019356bce110202f2d611178709f8d7f43ae0637836400a85e97dae165f": "v0.2.2-preview",
     "418e79e67704322e1ca73c17d82f473e02b23bbb8c72594365484123d0877e7c": "v0.3.0-preview to v0.3.4-preview",
+    "993aaa979586228d3d31ee58879fd75c20c3c88767261b3fdbdd05ae393532c5": "v0.3.5-preview to v0.3.6",
 }
 
 def launch_status(bundle, message):
