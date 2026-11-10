@@ -6,7 +6,7 @@ import hashlib
 import importlib.util
 from pathlib import Path
 import re
-import shutil
+import shutil  # noqa: F401 - the tests patch setup.shutil.which
 import struct
 import subprocess
 import sys
@@ -100,8 +100,8 @@ def fetch_archive(cache):
             pending = Path(target.name)
             request = urllib.request.Request(RELEASE_URL, headers={"User-Agent": "AMDNR-Linux-setup"})
             with urllib.request.urlopen(request, timeout=60) as source:
-                shutil.copyfileobj(source, target)
-        if digest(pending) != RELEASE_SHA256:
+                received = runtimes.receive(source, target, ARCHIVE_NAME)
+        if received != RELEASE_SHA256:
             raise ValueError("Downloaded AMDNR archive checksum mismatch; package was not prepared.")
         pending.replace(archive)
         return archive
