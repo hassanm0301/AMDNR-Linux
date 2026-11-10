@@ -16,7 +16,7 @@
 > **We need your support.** Join the Discord server — <https://discord.gg/AMDNR> — for
 > help, bug reports and test builds; every report with a log makes the next build better.
 
-DLSS 5 Neural Rendering running on AMD GPUs, built into OptiScaler so it works in any
+AMDNR 5 Neural Rendering running on AMD GPUs, built into OptiScaler so it works in any
 Direct3D 12 game OptiScaler already hooks. On top of the neural pass: model interleave for a
 large frame-rate gain, residual composition, XeSS frame generation unlocked up to 6X (up to 10X
 opt-in in D3D12 games), and FSR Ray Regeneration for games that use DLSS Ray Reconstruction. Since 0.3.5,
@@ -1130,6 +1130,7 @@ upstream.
 - **Screen-space GI** (the inherited effect; retired from the menu in 0.3.4, `[AmdRtgi] Enabled` in the ini) — an effect AMDNR inherited from the OptiScaler-AMD-PreSR lineage; the credit belongs to its original authors. It needs the `experimental_lighting` folder of the danielblnc package, which AMDNR does not ship.
 - **AMDNR Screen-space GI by 3zwr1** - AMDNR's own, Copyright (c) 2026 3zwr1 (AMDNR), written from published research (listed in `CHANGELOG.md` and `Licenses/AMDNR_NOTICE.txt`).
 - **OptiScaler** — Overclockers — https://github.com/Overclockers/OptiScaler-Releases
+- **FSR LOSSY, EXACT** — zgauthier2000 — [FSR LOSSY AND EXACT](https://github.com/zgauthier2000/)
 
 ## AMDNR Launcher
 
