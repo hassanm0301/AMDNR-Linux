@@ -1,3 +1,68 @@
+# Linux v0.3.7 — upstream AMDNR 0.3.5.8R18 staging, a faster manager
+
+The repository follows upstream AMDNR 0.3.5.8R18, `manage.py stage` accepts its
+archive, and the manager no longer re-reads a game's installed files every time
+it looks at them. The HIP bridge and the patched graphics sources are the same
+as in v0.3.6; the manager still installs AMDNR 0.3.5.6 and every AMDNR default
+is as upstream ships it.
+
+## New
+
+- `manage.py stage` accepts the AMDNR 0.3.5.8R18 archive (2026-11-09,
+  `49383e59…`). Upstream stopped publishing lmxxf on GitHub after 0.3.5.8R2,
+  so give it R2's lmxxf archive with `--lmxxf-archive`: the R18 host looks up
+  the same eleven lmxxf functions as the R2 host and R2's runtime exports all of
+  them. R18 spells its host `Optiscaler.dll` and defaults to upstream's Mochi
+  runtime; staging installs the host as `winmm.dll` and sets `NrBackend=lmxxf`
+  as for every release. **This pairing has not run on a GPU on Linux** and
+  the manager does not offer it. Mochi, Daniel 0.8.0 and the experimental FSR 4
+  upscaler DLLs in the R18 archive are not staged (see the coverage table in
+  `linux/README.md`).
+
+## Changed
+
+- **The manager looks at a game faster.** Selecting a game, and every action,
+  compares each installed file with its recorded SHA-256: about 1 GiB with
+  lmxxf's weights. A file whose device, inode, size, modification time and
+  status-change time are unchanged since the manager last read it is not read
+  again; a file changed in the last three seconds is always read. On a 1040 MiB
+  package this took a repeated look from 0.97 s to under 0.01 s (warm page
+  cache; the first look is unchanged). Install, Repair, Update, Uninstall, the
+  loading-DLL switch and the game wrapper still hash everything they read and
+  write.
+- Choosing a game's executable and changing its loading DLL read the
+  installation record instead of hashing the whole installation (twice, when
+  choosing an executable).
+- Downloads of AMDNR, lmxxf, danielblnc's runtime, OptiPatcher and the pre-SR
+  host are verified as they arrive instead of being read back from disk
+  afterwards (0.7 s less for a 730 MiB archive on the same machine, more on a
+  slow disk).
+- The upstream AMDNR sources in `main/AMDNR-source` include chooidos's FFX fix
+  for upscaling a view inside a shared texture and for depth with NT shared
+  handles (upstream PR #61), and the README and launcher manifest follow
+  upstream's 0.3.5.8R18 state. The Linux package uses upstream's release
+  binaries and does not read the manifest, so none of this changes what is
+  installed.
+
+## Fixed
+
+- `linux/build.sh` failed on Ubuntu and other distributions that fortify by
+  default: `signal_guard.c` ignored `write()`'s result with a cast, which
+  `-Werror` rejects there. The replacement compiles to the same machine code
+  where the old source compiled (compared with GCC 13.3).
+
+## Validation
+
+All 378 Linux unit tests pass, including the Qt manager tests (one skip:
+PyYAML is not installed). The real 0.3.5.8R18 and 0.3.5.8R2 archives were
+downloaded, matched against the pinned digests and upstream's
+`SHA256SUMS.txt`, and staged with placeholder bridge binaries.
+
+**The GPU suite was not run for this release**, and 0.3.5.8R18 has no GPU or
+game result on Linux. The sources of the HIP bridge and the vkd3d-proton patch
+are unchanged since v0.3.5-preview; no new game compatibility or long-duration
+stability is claimed beyond v0.3.6.
+
 # Linux v0.3.6 — upstream AMDNR 0.3.5.8R documentation
 
 A documentation release. The manager, the game wrapper, the HIP bridge and the
