@@ -246,7 +246,7 @@ class Controller:
     def set_executable(self, game, executable):
         if getattr(game, "library_ambiguous", False):
             raise ValueError("Steam lists this game in more than one library. Resolve the duplicate in Steam, then rescan.")
-        if self.pending_operation(game) or (game.exe_dir and self.backend.inspect(game.exe_dir).get("recovery_needed")):
+        if self.pending_operation(game) or (game.exe_dir and self.backend.installation(game.exe_dir)["recovery_needed"]):
             raise ValueError("Recover the interrupted installation before changing its executable directory.")
         executable = Path(executable).resolve()
         if (not executable.is_file() or executable.suffix.lower() != ".exe"
@@ -257,7 +257,7 @@ class Controller:
             raise ValueError("Choose an executable inside this Steam game's installation.")
         if stores.store_name(game) and not executable.is_relative_to(game.install_dir.resolve()):
             raise ValueError(f"Choose an executable inside this game's {stores.store_name(game)} installation.")
-        if game.exe_dir and self.backend.inspect(game.exe_dir).get("installed") and executable.parent != game.exe_dir:
+        if game.exe_dir and self.backend.installation(game.exe_dir)["installed"] and executable.parent != game.exe_dir:
             raise ValueError("Uninstall the current patch before changing its executable directory.")
         self.settings.setdefault("executables", {})[self.game_key(game)] = str(executable)
         self.save_settings()
@@ -542,7 +542,7 @@ class Controller:
         if action == "switch_proxy":
             self.report("Changing the game's loading DLL…")
             self.mutate(self.backend, action, game, proxy=proxy)
-            selected = self.backend.inspect(directory)["proxy_name"]
+            selected = self.backend.installation(directory)["proxy_name"]
             return {"message": f"Loading DLL changed to {selected}. Launch the game to check whether OptiScaler opens."}
         backend = self.backend
         if action == "update":

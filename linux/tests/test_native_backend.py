@@ -7,11 +7,13 @@ import shutil
 import struct
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+import native_launcher.backend as backend_module
 from native_launcher.backend import LauncherBackend, CompilerNeeded, ConflictError, GameRunning
 
 
@@ -360,6 +362,96 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(snapshot(self.game), before)
         self.backend.repair(self.game, self.b)
         self.assertEqual(self.backend.switch_proxy(self.game)['proxy_name'], 'version.dll')
+
+    def hashed(self):
+        """Patch hashing to record the files inspect reads in full."""
+        read = []
+        original = hashlib.file_digest
+        def counting(source, algorithm):
+            read.append(Path(source.name).name)
+            return original(source, algorithm)
+        counter = patch.object(backend_module.hashlib, "file_digest", counting)
+        counter.start()
+        self.addCleanup(counter.stop)
+        return read
+
+    def test_inspect_reads_unchanged_files_once_and_changed_files_again(self):
+        self.backend.install(self.game, self.a)
+        verified = backend_module._VerifiedDigests()
+        verified.SETTLED_NS = -1  # the fixture's files are seconds old; treat them as settled
+        with patch.object(backend_module, "_verified", verified):
+            read = self.hashed()
+            self.assertEqual(self.backend.inspect(self.game)["status"], "installed")
+            self.assertIn("LmxxfNrRuntime.pak", read)
+            first = len(read)
+            del read[:]
+            self.assertEqual(self.backend.inspect(self.game)["status"], "installed")
+            self.assertEqual(read, [])
+            self.assertGreater(first, 5)
+            # Same size and the same modification time: the status-change time still gives it away.
+            host = self.game / "winmm.dll"
+            details = host.stat()
+            time.sleep(0.05)
+            host.write_bytes(bytes(len(host.read_bytes())))
+            os.utime(host, ns=(details.st_atime_ns, details.st_mtime_ns))
+            self.assertEqual(host.stat().st_mtime_ns, details.st_mtime_ns)
+            result = self.backend.inspect(self.game)
+            self.assertEqual((result["status"], result["modified"]), ("needs_repair", ["winmm.dll"]))
+            self.assertEqual(read, ["winmm.dll"])
+            # A replaced file (new inode) is read again too, and a deleted one is reported missing.
+            del read[:]
+            replacement = self.game / "replacement"
+            replacement.write_bytes((self.a / "winmm.dll").read_bytes())
+            replacement.replace(host)
+            (self.game / "LmxxfNrRuntime.dll").unlink()
+            result = self.backend.inspect(self.game)
+            self.assertEqual((result["modified"], result["missing"]), ([], ["LmxxfNrRuntime.dll"]))
+            self.assertEqual(read, ["winmm.dll"])
+
+    def test_inspect_always_reads_recently_written_files(self):
+        self.backend.install(self.game, self.a)
+        verified = backend_module._VerifiedDigests()
+        with patch.object(backend_module, "_verified", verified):
+            read = self.hashed()
+            self.backend.inspect(self.game)
+            first = list(read)
+            self.backend.inspect(self.game)
+            self.assertEqual(read, first * 2)
+            self.assertEqual(verified._known, {})
+            # Once old enough, a file is remembered; a clock set back is never trusted.
+            host = self.game / "winmm.dll"
+            with patch.object(backend_module.time, "time_ns", return_value=time.time_ns() + 60 * 1000**3):
+                digest = verified.sha(host)
+                del read[:]
+                self.assertEqual(verified.sha(host), digest)
+                self.assertEqual(read, [])
+            self.assertEqual(digest, hashlib.sha256(host.read_bytes()).hexdigest())
+            verified._known.clear()
+            with patch.object(backend_module.time, "time_ns", return_value=time.time_ns() - 3600 * 1000**3):
+                verified.sha(host)
+            self.assertEqual(verified._known, {})
+
+    def test_installation_matches_inspect_without_reading_installed_files(self):
+        def agree():
+            brief, full = self.backend.installation(self.game), self.backend.inspect(self.game)
+            self.assertEqual(brief, {key: full[key] for key in ("game_dir", "installed", "proxy_name", "recovery_needed")})
+            return brief
+        self.assertEqual(agree(), dict(game_dir=str(self.game.resolve()), installed=False, proxy_name=None,
+                                       recovery_needed=False))
+        self.backend.install(self.game, self.a, proxy="version.dll")
+        read = self.hashed()
+        self.assertEqual(self.backend.installation(self.game)["proxy_name"], "version.dll")
+        self.assertEqual(read, [])
+        self.assertTrue(agree()["installed"])
+        record = self.game / self.backend.manage.RECORD
+        saved = record.read_text()
+        record.write_text("{not a record")
+        self.assertFalse(agree()["installed"])
+        record.write_text(saved)
+        journal = self.backend._transaction_dir(self.game) / "journal.json"
+        journal.parent.mkdir(parents=True, exist_ok=True)
+        journal.write_text("{}")
+        self.assertTrue(self.backend.installation(self.game)["recovery_needed"])
 
     def test_redundant_install_refused_and_repair_restores_damaged_files(self):
         self.backend.install(self.game, self.a)
