@@ -2,6 +2,7 @@
 from dataclasses import replace
 import hashlib
 import importlib.util
+import io
 import json
 from pathlib import Path
 import os
@@ -204,6 +205,19 @@ class ArchiveTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "larger"):
             runtimes.fetch(source.as_uri(), digest(b"replaced upstream"), cache, "big.bin", size=4)
         self.assertEqual(sorted(path.name for path in cache.iterdir()), ["file.bin"])
+
+    def test_download_is_verified_as_it_arrives_and_read_once(self):
+        data = bytes(range(256)) * 9000  # more than two 1 MiB reads
+        sink = io.BytesIO()
+        self.assertEqual(runtimes.receive(io.BytesIO(data), sink, "file.bin", size=len(data)), digest(data))
+        self.assertEqual(sink.getvalue(), data)
+        with self.assertRaisesRegex(ValueError, "larger than published"):
+            runtimes.receive(io.BytesIO(data), io.BytesIO(), "file.bin", size=len(data) - 1)
+        source = self.root / "published.bin"
+        source.write_bytes(data)
+        with patch.object(runtimes, "_sha", side_effect=AssertionError("download read back from disk")):
+            fetched = runtimes.fetch(source.as_uri(), digest(data), self.root / "cache", "file.bin")
+        self.assertEqual(fetched.read_bytes(), data)
 
 
 class StageComponentTests(unittest.TestCase):

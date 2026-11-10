@@ -314,6 +314,22 @@ def runtimes_for(gpu, host=None, host_version=None):
     return [runtime for runtime in offered if host is None or host_drives(host, runtime)]
 
 
+def receive(source, output, name, size=None):
+    """Copy a download to output and return its SHA-256, computed as it arrives.
+
+    Archives here run to 750 MiB; verifying them from the bytes written saves
+    reading each one back from disk. size, when published, bounds the copy.
+    """
+    digest, copied = hashlib.sha256(), 0
+    while chunk := source.read(1024 * 1024):
+        copied += len(chunk)
+        if size is not None and copied > size:
+            raise ValueError(f"Download of {name} is larger than published; nothing was used.")
+        output.write(chunk)
+        digest.update(chunk)
+    return digest.hexdigest()
+
+
 def fetch(url, sha256, cache, name, size=None, user_agent="AMDNR-Linux"):
     """Download once into cache, verifying the pinned digest before use."""
     cache.mkdir(parents=True, exist_ok=True)
@@ -328,13 +344,8 @@ def fetch(url, sha256, cache, name, size=None, user_agent="AMDNR-Linux"):
             pending = Path(output.name)
             request = urllib.request.Request(url, headers={"User-Agent": user_agent})
             with urllib.request.urlopen(request, timeout=60) as source:
-                copied = 0
-                while chunk := source.read(1024 * 1024):
-                    copied += len(chunk)
-                    if size is not None and copied > size:
-                        raise ValueError(f"Download of {name} is larger than published; nothing was used.")
-                    output.write(chunk)
-        if _sha(pending) != sha256:
+                received = receive(source, output, name, size)
+        if received != sha256:
             raise ValueError(f"Downloaded {name} failed checksum verification; nothing was used.")
         pending.replace(target)
         return target
