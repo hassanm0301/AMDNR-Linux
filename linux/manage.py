@@ -18,15 +18,19 @@ RELEASES = {
     "e7ffc09696f1a4e06d26dc0c228d15a9c74a0e56e3d24be6a130a0f5e49968d8": "0.3.5.6",
     "5be27149c19442c4b022e993c679fdd17879fa68a5b472afa4521205e1e90695": "0.3.5.8",
     "a11143327ede14ff4d7fe50ea0ce9d148320aeec4cd163f11c8c9973c944a97d": "0.3.5.8R2",
+    "49383e59ef6c9ba22be7028aa565b9fd98cf164f89906bba4c56f307834f27f3": "0.3.5.8R18",
 }
-# From 0.3.5.8R1 the lmxxf runtime is a separate archive on the same GitHub
-# release; the host still loads both files from beside itself.
-LMXXF_ARCHIVES = {
-    "0.3.5.8R2": runtimes.Download(
-        "AMDNR-lmxxf-0.3.5.8R2.zip", "0.3.5.8R2",
-        "https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha0.3.5.8R2/AMDNR-lmxxf-0.3.5.8R2.zip",
-        "58ccdf75c1caace59826433c77a23a00c2c77dc9842868917bfc3be9a10f9607", 765998225),
-}
+# From 0.3.5.8R1 the lmxxf runtime is a separate archive; the host still loads
+# both files from beside itself. Upstream published it on GitHub with 0.3.5.8R2
+# only: later releases leave it to the Windows launcher, so they are staged with
+# R2's archive, whose runtime exports every LmxxfNr function their hosts import.
+_LMXXF_R2 = runtimes.Download(
+    "AMDNR-lmxxf-0.3.5.8R2.zip", "0.3.5.8R2",
+    "https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha0.3.5.8R2/AMDNR-lmxxf-0.3.5.8R2.zip",
+    "58ccdf75c1caace59826433c77a23a00c2c77dc9842868917bfc3be9a10f9607", 765998225)
+LMXXF_ARCHIVES = {"0.3.5.8R2": _LMXXF_R2, "0.3.5.8R18": _LMXXF_R2}
+# 0.3.5.8R18 spells its host Optiscaler.dll; it is installed as winmm.dll either way.
+HOST_NAMES = ("OptiScaler.dll", "Optiscaler.dll")
 LMXXF_FILES = ("LmxxfNrRuntime.dll", "LmxxfNrRuntime.pak")
 # A style for the in-game Neural tab's first custom slot (Style slots > Apply), not a default: the
 # residual limit and edge guard that removed most of NR's edge halos and colour drift on lmxxf in
@@ -65,7 +69,7 @@ def extract(archive, target, wanted):
             name = entry.filename.replace("\\", "/")
             if not wanted(name):
                 continue
-            name = "winmm.dll" if name == "OptiScaler.dll" else name
+            name = "winmm.dll" if name in HOST_NAMES else name
             destination = safe_path(target, name)
             destination.parent.mkdir(parents=True, exist_ok=True)
             with package.open(entry) as source, destination.open("wb") as sink:
@@ -116,7 +120,7 @@ def stage(archive, compiler, output, build, rocm, daniel=None, optipatcher=None,
         if alternate:
             staged = extract(archive, target, lambda name: name in alternate.files or name.startswith(alternate.folders))
         else:
-            staged = extract(archive, target, lambda name: name in ("OptiScaler.dll", "OptiScaler.ini", *LMXXF_FILES)
+            staged = extract(archive, target, lambda name: name in (*HOST_NAMES, "OptiScaler.ini", *LMXXF_FILES)
                              or name.startswith(("OptiScaler/", "Licenses/")))
         if separate:
             # Its licence files repeat the main archive's, which are kept.
@@ -124,6 +128,8 @@ def stage(archive, compiler, output, build, rocm, daniel=None, optipatcher=None,
                     (name.startswith("Licenses/") and name not in staged))
             if not all((target / name).is_file() for name in LMXXF_FILES):
                 raise ValueError(f"{separate.name} does not contain the lmxxf runtime.")
+        if not (target / "winmm.dll").is_file() or not (target / "OptiScaler.ini").is_file():
+            raise ValueError(f"{host_name} archive does not contain the host and its OptiScaler.ini.")
         components = {"neural_runtime": "lmxxf", "daniel": None, "optipatcher": None}
         if model_e:
             if alternate or not runtimes.host_loads_model_e(target / "winmm.dll"):
@@ -404,7 +410,7 @@ def main():
     s.add_argument("--build", type=Path, default=ROOT / "build")
     s.add_argument("--rocm", type=Path)
     s.add_argument("--lmxxf-archive", type=Path, metavar="ZIP",
-                   help="The release's separate, pinned AMDNR-lmxxf-<version>.zip (0.3.5.8R2 and newer)")
+                   help="The release's separate, pinned AMDNR-lmxxf-<version>.zip (0.3.5.8R2; 0.3.5.8R18 takes R2's)")
     s.add_argument("--daniel-runtime", type=Path, metavar="ZIP",
                    help="Pinned, unmodified danielblnc vX.Y.Z-Runtime.zip; selects NrBackend=daniel")
     s.add_argument("--optipatcher", type=Path, metavar="ASI", help="Pinned, unmodified OptiPatcher_vX.YY.asi")

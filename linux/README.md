@@ -112,10 +112,24 @@ The stage command accepts these checksum-pinned upstream archives:
 | [0.3.5.8](https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha0.3.5.8/AMDNR-v0.3.5.8.zip) | `5be27149c19442c4b022e993c679fdd17879fa68a5b472afa4521205e1e90695` |
 | [0.3.5.8R2](https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha0.3.5.8R2/AMDNR-v0.3.5.8R2.zip) | `a11143327ede14ff4d7fe50ea0ce9d148320aeec4cd163f11c8c9973c944a97d` |
 | [0.3.5.8R2 lmxxf](https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha0.3.5.8R2/AMDNR-lmxxf-0.3.5.8R2.zip) | `58ccdf75c1caace59826433c77a23a00c2c77dc9842868917bfc3be9a10f9607` |
+| [0.3.5.8R18](https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha0.3.5.8R18/AMDNR-v0.3.5.8R18.zip) | `49383e59ef6c9ba22be7028aa565b9fd98cf164f89906bba4c56f307834f27f3` |
 
 From 0.3.5.8R2 the lmxxf runtime (`LmxxfNrRuntime.dll` and `.pak`) is a separate
 archive on the same release. Give it with `--lmxxf-archive`; staging refuses
 0.3.5.8R2 without it, and places both files beside the host as before.
+
+0.3.5.8R18 (2026-11-09) is accepted for staging only and **has not run on a GPU
+on Linux**. Upstream no longer publishes an lmxxf archive on GitHub (its Windows
+launcher fetches lmxxf), so give R18 the 0.3.5.8R2 lmxxf archive above with
+`--lmxxf-archive`: the R18 host looks up the same eleven `LmxxfNr…` functions as
+the R2 host, and R2's `LmxxfNrRuntime.dll` exports all of them. Its host is
+spelled `Optiscaler.dll` and is installed as `winmm.dll` like the others. Its
+`OptiScaler.ini` selects upstream's Mochi runtime by default; staging sets
+`NrBackend=lmxxf` (or `daniel`) as for every release and leaves the rest as
+upstream ships it, including `Dx12Upscaler = dlssd`. The R18 host pins the same
+danielblnc pass digests as 0.3.5.6 and reads the Model E receipt. The Mochi
+runtime, the Daniel 0.8.0 shaders in `dlssnr-amd/`, the experimental FSR 4
+upscaler DLLs in `FSR4Fast/` and upstream's model tools are not staged.
 
 `setup.py` and the manager download 0.3.5.6. Its archive has the same files as
 0.3.5.5R4 and an identical `OptiScaler.ini`; the host, the lmxxf runtime, its
@@ -547,6 +561,8 @@ external memory/semaphore handle type.
 | Model E (HelixSR by lonewolf0622), new in 0.3.5.6 | Supported as an option (see "Optional upscaler: Model E"): built on the user's PC by HelixSR's own setup scripts, after a notice in the manager; needs Python 3 with numpy and Proton or Wine. Staged as `AMDNR-SR-E/` with the receipt the 0.3.5.6 host checks. The automated host pipeline passes with it on RX 9070 XT, alone and with lmxxf. No gameplay report yet. AMDNR's own "AMD SDK" package for HelixSR is not used: it is published only on AMDNR's own server, not on GitHub, and upscaling does not need it. |
 | Model L (d4r by countervolts), new in 0.3.5.6 | Not supported. d4r 0.1.4's Windows package ships its own Windows HIP 7.17 runtime, which needs AMD's Windows kernel driver, and the 0.3.5.6 host loads that copy from d4r's folder by full path. The bridge's `amdhip64_7.dll` cannot stand in: d4r's ZLUDA `nvcuda.dll` imports 99 HIP functions and the bridge exports 39 of them. The missing ones include texture and surface objects, arrays, synchronous copies and fills, occupancy queries and graph updates. d4r's own Linux build needs its patched vkd3d-proton as the game's `d3d12.dll`, which this fork already replaces with its own. |
 | Daniel 0.8.0 (danielblnc's NeuralHub host), new in 0.3.5.8 | Not supported. It is not a pass-DLL runtime: upstream's `Daniel-0.8.0-Manual-AMDNR-0.3.5.8.zip` (Alpha0.3.5.8R1, `7e614462…`) carries danielblnc's `neuralhub_host.dll` (`be9172b6…`, which the 0.3.5.8R2 host pins), loaded from a per-game `AMDNR-NeuralHub-080/` folder that also needs settings files and an imported data index written by upstream's preparation script and in-game menu. Its NR pass reads the user's own NVIDIA `nvngx_dlssnr.dll` (310.9.16.0 or 310.8.0.0, shipped only with DLSS 5 games and not downloadable), and SR/RR/FG need NVIDIA's 310.9.16 DLLs. Its HIP path calls seven functions the bridge does not export (`hipCreateTextureObject`, `hipDestroyTextureObject`, `hipMallocPitch`, `hipMemcpy2D`, `hipMemset2D`, `hipMemset2DAsync`, `hipMemsetD16Async`); its D3D12 path needs AMD's Windows driver extension (`amdxc64.dll`), which Proton does not provide. |
+| AMDNR host 0.3.5.8R18 | Staging only (`manage.py stage`, with the 0.3.5.8R2 lmxxf archive); not downloaded by `setup.py` or the manager, and not yet run on a GPU on Linux. Checked without a GPU: the archive's digest matches upstream's `SHA256SUMS.txt`, the host pins the pass digests of danielblnc 0.4.0 to 0.6.0 and reads the Model E receipt, it imports the same `LmxxfNr…` functions as the 0.3.5.8R2 host, and the real archive stages. |
+| Mochi runtime (mochizuki0323, through OpenNR), the default in 0.3.5.8R18 | Not supported and not staged. `MochizukiNrRuntime.dll` is a Vulkan runtime (it imports `vulkan-1.dll`, not HIP), driven through a separate `AMDNRModelBWorker.exe`; its models are prepared by upstream's Windows launcher from the user's own NVIDIA `nvngx_dlssnr.dll` 310.9.16 and are not published. Untested under Proton. |
 | nvngx.dll_dlssnr.dll forwarder | Not applicable: it only serves NVIDIA's own DLSS-NR snippet. |
 | AMDNR Anywhere (Magpie capture host) | Not supported: it depends on Windows window capture that Wine/DXVK do not implement. |
 | TheAutomatic's "OptiScaler AMD pre-SR" 1.9.1-alpha (alternate host) | Supported as an optional host build in setup (`--host presr`), staging and the launcher; AMDNR stays the default. It drives danielblnc 0.3.1 only (it identifies danielblnc's own 0.2.17–0.3.1 builds by digest, not 0.4.0+), which is downloaded from AMDNR's Alpha0.3.3 release. Its own lmxxf backend is not offered: its weights are not published anywhere that can be pinned. Its Setup/Uninstall scripts and READMEs are not installed; licences are. The automated host pipeline passes on RX 9070 XT (danielblnc 0.3.1: 577/577 passes, no timeouts; OptiPatcher loads). One of five runs hung once at host start-up and did not reproduce. No gameplay report yet. |
