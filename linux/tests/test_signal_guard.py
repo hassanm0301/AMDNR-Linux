@@ -77,6 +77,9 @@ class SignalGuardTests(unittest.TestCase):
     def test_signal_handler_restoration_does_not_enter_dynamic_loader(self):
         self.run_case("signal_restore")
 
+    def test_comgr_keeps_the_signal_stack_wine_finds_its_thread_by(self):
+        self.run_case("altstack")
+
 
 if __name__ == "__main__":
     unittest.main()

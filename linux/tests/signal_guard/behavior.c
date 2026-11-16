@@ -163,6 +163,60 @@ static int signal_restore(void)
     return 0;
 }
 
+static char wine_stack[65536], llvm_stack[131072];
+
+static int current_stack_is(const char *base)
+{
+    stack_t current;
+    CHECK(!sigaltstack(NULL, &current));
+    CHECK(current.ss_sp == base && !(current.ss_flags & SS_DISABLE));
+    return 0;
+}
+
+static int altstack(void)
+{
+    /* Wine handles faults and gave this thread its signal stack. */
+    struct sigaction action = wine_action();
+    CHECK(!sigaction(SIGSEGV, &action, NULL));
+    stack_t wine = {.ss_sp = wine_stack, .ss_size = sizeof(wine_stack)};
+    stack_t llvm = {.ss_sp = llvm_stack, .ss_size = sizeof(llvm_stack)};
+    CHECK(!sigaltstack(&wine, NULL));
+    stack_t previous = {0};
+    for (int i = 0; i < 3; ++i)
+    {
+        /* COMGR's LLVM may not replace it; it is told the stack is in use. */
+        errno = 0;
+        CHECK(comgr_altstack(&llvm, &previous) == -1);
+        CHECK(errno == EPERM);
+        CHECK(previous.ss_sp == wine_stack && previous.ss_size == sizeof(wine_stack));
+        CHECK(!current_stack_is(wine_stack));
+    }
+    /* Queries from COMGR and replacements by anyone else are unaffected. */
+    CHECK(!comgr_altstack(NULL, &previous));
+    CHECK(previous.ss_sp == wine_stack);
+    CHECK(!sigaltstack(&llvm, &previous));
+    CHECK(!current_stack_is(llvm_stack));
+    CHECK(!sigaltstack(&wine, NULL));
+    /* A thread without a stack gets LLVM's, and LLVM can restore it. */
+    stack_t disabled = {.ss_flags = SS_DISABLE};
+    CHECK(!sigaltstack(&disabled, NULL));
+    CHECK(!comgr_altstack(&llvm, &previous));
+    CHECK(previous.ss_flags & SS_DISABLE);
+    CHECK(!current_stack_is(llvm_stack));
+    CHECK(!comgr_altstack(&previous, NULL));
+    CHECK(!sigaltstack(NULL, &previous));
+    CHECK(previous.ss_flags & SS_DISABLE);
+    /* Without Wine's fault handler, LLVM replaces a stack as it would anywhere. */
+    CHECK(!sigaltstack(&wine, NULL));
+    action.sa_handler = SIG_DFL;
+    action.sa_flags = 0;
+    CHECK(!sigaction(SIGSEGV, &action, NULL));
+    CHECK(!comgr_altstack(&llvm, &previous));
+    CHECK(previous.ss_sp == wine_stack);
+    CHECK(!current_stack_is(llvm_stack));
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     CHECK(argc == 2);
@@ -174,6 +228,7 @@ int main(int argc, char **argv)
     else if (!strcmp(argv[1], "scope")) result = scope();
     else if (!strcmp(argv[1], "alias")) result = alias();
     else if (!strcmp(argv[1], "signal_restore")) result = signal_restore();
+    else if (!strcmp(argv[1], "altstack")) result = altstack();
     else { fprintf(stderr, "unknown test: %s\n", argv[1]); return 1; }
     if (!result) puts("PASS");
     return result;

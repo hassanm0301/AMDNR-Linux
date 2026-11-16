@@ -15,6 +15,7 @@ void comgr_restore_in_signal(void);
 int comgr_restore_result(void);
 int comgr_replace(const struct sigaction *action, struct sigaction *previous);
 int comgr_query(struct sigaction *previous);
+int comgr_altstack(const stack_t *stack, stack_t *previous);
 
 unsigned loader_calls(void);
 #endif

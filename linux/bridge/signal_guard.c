@@ -4,6 +4,10 @@
  * Wine needs that context to implement Windows exceptions. Wine also uses
  * signals to suspend threads. Keep Wine's handlers when COMGR installs its
  * diagnostics, while leaving all other libraries and signal actions alone.
+ * LLVM also replaces a thread's alternate signal stack when it is smaller
+ * than MINSIGSTKSZ + 64 KiB, and MINSIGSTKSZ comes from the kernel at run
+ * time. Wine finds a thread's state from the address of its signal stack, so
+ * keep Wine's stack too.
  * This is a native preload library, separate from the Wine builtin DLL.
  */
 #define _GNU_SOURCE
@@ -40,9 +44,12 @@ static struct module_ranges modules;
 static atomic_uint ranges_state; /* 0: unknown, 1: discovering, 2: published */
 _Static_assert(ATOMIC_INT_LOCK_FREE == 2, "Signal-path atomics must be lock-free");
 
+static int (*next_sigaltstack)(const stack_t *, stack_t *);
+
 static void resolve_sigaction(void)
 {
     next_sigaction = dlsym(RTLD_NEXT, "sigaction");
+    next_sigaltstack = dlsym(RTLD_NEXT, "sigaltstack");
     trace_enabled = getenv("AMDNR_SIGNAL_TRACE") != NULL;
 }
 
@@ -195,4 +202,58 @@ int sigaction(int signal, const struct sigaction *action, struct sigaction *prev
     }
     errno = saved_errno;
     return next_sigaction(signal, &requested, previous);
+}
+
+static int from_comgr(uintptr_t caller)
+{
+    if (atomic_load_explicit(&ranges_state, memory_order_acquire) == 2)
+        return contains(&modules.comgr, caller);
+    struct image_ranges ranges = {0};
+    return image_at(caller, "libamd_comgr.so", 1, &ranges);
+}
+
+static int wine_handles_faults(void)
+{
+    struct sigaction current;
+    if (next_sigaction(SIGSEGV, NULL, &current) || !(current.sa_flags & SA_SIGINFO)) return 0;
+    uintptr_t handler = (uintptr_t)current.sa_sigaction;
+    if (atomic_load_explicit(&ranges_state, memory_order_acquire) == 2)
+        return contains(&modules.wine, handler);
+    struct image_ranges ranges = {0};
+    return image_at(handler, "ntdll.so", 0, &ranges);
+}
+
+int sigaltstack(const stack_t *stack, stack_t *previous)
+{
+    if (!next_sigaltstack) pthread_once(&once, resolve_sigaction);
+    if (!next_sigaltstack || !next_sigaction) { errno = ENOSYS; return -1; }
+    /* Queries and disabling pass through untouched. LLVM restores its saved
+     * stack only after its own stack was installed, which this never allows
+     * on a Wine thread, so the loader is not entered from a signal handler. */
+    if (!stack || (stack->ss_flags & SS_DISABLE)) return next_sigaltstack(stack, previous);
+
+    stack_t requested = *stack, current;
+    uintptr_t caller = (uintptr_t)__builtin_return_address(0);
+    int saved_errno = errno;
+    if (!from_comgr(caller) || next_sigaltstack(NULL, &current))
+    {
+        errno = saved_errno;
+        return next_sigaltstack(&requested, previous);
+    }
+    /* A thread without a stack, or a process whose faults Wine does not
+     * handle, gets LLVM's stack as before. */
+    if ((current.ss_flags & (SS_DISABLE | SS_ONSTACK)) || !current.ss_sp || !wine_handles_faults())
+    {
+        errno = saved_errno;
+        return next_sigaltstack(&requested, previous);
+    }
+    if (previous) *previous = current;
+    if (trace_enabled)
+    {
+        static const char message[] = "amdnr-signals: keeping Wine's signal stack during COMGR\n";
+        (void)write(STDERR_FILENO, message, sizeof(message) - 1);
+    }
+    /* LLVM frees its stack when sigaltstack fails and keeps running without it. */
+    errno = EPERM;
+    return -1;
 }

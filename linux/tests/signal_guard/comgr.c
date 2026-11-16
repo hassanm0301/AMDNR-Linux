@@ -42,3 +42,7 @@ int comgr_query(struct sigaction *previous)
 {
     return sigaction(SIGUSR1, NULL, previous);
 }
+int comgr_altstack(const stack_t *stack, stack_t *previous)
+{
+    return sigaltstack(stack, previous);
+}
