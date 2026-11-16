@@ -19,6 +19,7 @@ RELEASES = {
     "5be27149c19442c4b022e993c679fdd17879fa68a5b472afa4521205e1e90695": "0.3.5.8",
     "a11143327ede14ff4d7fe50ea0ce9d148320aeec4cd163f11c8c9973c944a97d": "0.3.5.8R2",
     "49383e59ef6c9ba22be7028aa565b9fd98cf164f89906bba4c56f307834f27f3": "0.3.5.8R18",
+    "41fd1efb34bb761b1305fe84393705e7a09bfe470e66a230b9753f9d3714fe5a": "0.3.5.8R23",
 }
 # From 0.3.5.8R1 the lmxxf runtime is a separate archive; the host still loads
 # both files from beside itself. Upstream published it on GitHub with 0.3.5.8R2
@@ -28,8 +29,8 @@ _LMXXF_R2 = runtimes.Download(
     "AMDNR-lmxxf-0.3.5.8R2.zip", "0.3.5.8R2",
     "https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/Alpha0.3.5.8R2/AMDNR-lmxxf-0.3.5.8R2.zip",
     "58ccdf75c1caace59826433c77a23a00c2c77dc9842868917bfc3be9a10f9607", 765998225)
-LMXXF_ARCHIVES = {"0.3.5.8R2": _LMXXF_R2, "0.3.5.8R18": _LMXXF_R2}
-# 0.3.5.8R18 spells its host Optiscaler.dll; it is installed as winmm.dll either way.
+LMXXF_ARCHIVES = {"0.3.5.8R2": _LMXXF_R2, "0.3.5.8R18": _LMXXF_R2, "0.3.5.8R23": _LMXXF_R2}
+# 0.3.5.8R18 and R23 spell their host Optiscaler.dll; it is installed as winmm.dll either way.
 HOST_NAMES = ("OptiScaler.dll", "Optiscaler.dll")
 LMXXF_FILES = ("LmxxfNrRuntime.dll", "LmxxfNrRuntime.pak")
 # A style for the in-game Neural tab's first custom slot (Style slots > Apply), not a default: the
@@ -410,7 +411,7 @@ def main():
     s.add_argument("--build", type=Path, default=ROOT / "build")
     s.add_argument("--rocm", type=Path)
     s.add_argument("--lmxxf-archive", type=Path, metavar="ZIP",
-                   help="The release's separate, pinned AMDNR-lmxxf-<version>.zip (0.3.5.8R2; 0.3.5.8R18 takes R2's)")
+                   help="The release's separate, pinned AMDNR-lmxxf-<version>.zip (0.3.5.8R2; R18 and R23 take R2's)")
     s.add_argument("--daniel-runtime", type=Path, metavar="ZIP",
                    help="Pinned, unmodified danielblnc vX.Y.Z-Runtime.zip; selects NrBackend=daniel")
     s.add_argument("--optipatcher", type=Path, metavar="ASI", help="Pinned, unmodified OptiPatcher_vX.YY.asi")

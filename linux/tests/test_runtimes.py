@@ -80,9 +80,11 @@ class CatalogTests(unittest.TestCase):
         # 0.3.5.8R2's host pins the same pass digests as 0.3.5.6.
         self.assertEqual(runtimes.HOST_RUNTIMES["0.3.5.8R2"], runtimes.HOST_RUNTIMES["0.3.5.6"])
         self.assertEqual(runtimes.HOST_RUNTIMES["0.3.5.8R18"], runtimes.HOST_RUNTIMES["0.3.5.6"])
-        self.assertEqual(set(manage.LMXXF_ARCHIVES), {"0.3.5.8R2", "0.3.5.8R18"})
-        # Upstream published the lmxxf archive with R2 only; R18 is staged with that one.
-        self.assertIs(manage.LMXXF_ARCHIVES["0.3.5.8R18"], manage.LMXXF_ARCHIVES["0.3.5.8R2"])
+        self.assertEqual(runtimes.HOST_RUNTIMES["0.3.5.8R23"], runtimes.HOST_RUNTIMES["0.3.5.6"])
+        self.assertEqual(set(manage.LMXXF_ARCHIVES), {"0.3.5.8R2", "0.3.5.8R18", "0.3.5.8R23"})
+        # Upstream published the lmxxf archive with R2 only; later releases are staged with that one.
+        for later in ("0.3.5.8R18", "0.3.5.8R23"):
+            self.assertIs(manage.LMXXF_ARCHIVES[later], manage.LMXXF_ARCHIVES["0.3.5.8R2"])
         for version, separate in manage.LMXXF_ARCHIVES.items():
             self.assertIn(version, manage.RELEASES.values())
             self.assertRegex(separate.sha256, r"^[0-9a-f]{64}$")
