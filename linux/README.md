@@ -20,9 +20,9 @@ release (the folder containing `RELEASE-MANIFEST.json`), run:
 
 ```sh
 python3 linux/build-native-launcher.py \
-  --release-root /path/to/AMDNR-Linux-v0.3.6 \
-  --version 0.3.6 \
-  --output linux/build/AMDNR-Linux-Manager-v0.3.6-x86_64.AppImage
+  --release-root /path/to/AMDNR-Linux-v0.3.7 \
+  --version 0.3.7 \
+  --output linux/build/AMDNR-Linux-Manager-v0.3.7-x86_64.AppImage
 ```
 
 This packages the same Python, Qt, addon, notices and corresponding Qt source as
@@ -33,7 +33,7 @@ does not download an unpinned runtime. Building does not require FUSE. The exist
 stable builds require matching manifest and app versions.
 
 Make the resulting AppImage executable and open it. On systems without usable
-FUSE, run `./AMDNR-Linux-Manager-v0.3.6-x86_64.AppImage --appimage-extract-and-run`.
+FUSE, run `./AMDNR-Linux-Manager-v0.3.7-x86_64.AppImage --appimage-extract-and-run`.
 Host requirements remain glibc 2.34+, the GCC 11 C++ runtime, and an X11/Wayland
 desktop with graphics drivers. Settings, downloads and the persistent game Python
 runtime stay in the same user data/cache directories used by portable releases.
@@ -501,7 +501,12 @@ re-sends a fault without its original CPU context, which breaks Windows exceptio
 on concurrent game threads. The native preload only suppresses COMGR replacing
 an existing Wine handler. Other callers, queries, and restoration pass through.
 This disables LLVM-specific crash reporting for those signals; faults still reach
-Wine's normal exception handling. See the pinned
+Wine's normal exception handling. LLVM also replaces the thread's alternate
+signal stack when it is smaller than `MINSIGSTKSZ` + 64 KiB, a size the kernel
+sets at run time (79,040 bytes on Linux 7.3 against Wine's 63,376). Wine finds
+a thread's state from its signal stack address, so on LLVM's stack the next
+Windows exception on that thread ends the game. The guard refuses COMGR's
+replacement while the thread has a stack and Wine handles faults. See the pinned
 [LLVM signal dispatch](https://github.com/ROCm/llvm-project/blob/rocm-7.2.4/llvm/lib/Support/Unix/Signals.inc#L377-L435)
 and [COMGR save/restore](https://github.com/ROCm/llvm-project/blob/rocm-7.2.4/amd/comgr/src/comgr.cpp#L1219-L1233).
 

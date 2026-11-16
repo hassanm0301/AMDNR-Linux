@@ -1,3 +1,60 @@
+# Linux v0.3.7 — Windows exceptions after the first NR frame, shared prefixes
+
+Fixes a crash on up-to-date systems and makes games that share a Proton prefix,
+or whose game folder was deleted without Uninstall, start again. The AMDNR host
+stays at 0.3.5.6 and every AMDNR default is as upstream ships it; the HIP
+bridge DLL is the same as in v0.3.5.
+
+## Fixed
+
+- A game could close the first time it hit a Windows exception after NR ran
+  its first GPU kernel (seen with Linux 7.3.4 and glibc 2.44 on Arch). AMD's
+  shader compiler (COMGR) replaced the game thread's signal stack with LLVM's
+  own, because the system's minimum signal stack size now makes LLVM ask for
+  more than Wine's stack has. Wine finds a thread by
+  its signal stack, so it no longer recognised the thread and ended the
+  process. The signal guard now keeps Wine's stack. v0.3.6 and earlier have
+  the same problem on such systems; Update brings the fix.
+- A game no longer refuses to start with "A different HIP DLL is already
+  installed" when the prefix still holds the HIP bridge of an earlier AMDNR
+  Linux release whose game folder was deleted without Uninstall. The wrapper
+  recognises the bridges of published releases, renames such a file to
+  `<name>.<hash>.bak` beside it and notes it in `amdnr-linux/launch.log`.
+- Two games sharing a prefix no longer leave the older one in a conflict that
+  blocked Update, Repair and Uninstall. When the newer game's wrapper sets the
+  other's bridge aside, the manager shows "Update recommended" for the other
+  game; Update gives both the same bridge, and Uninstall leaves the bridge the
+  other game uses.
+
+## Changed
+
+- When the wrapper stops a launch, the manager shows its reason and time above
+  the game's status, so a game that does not start says why.
+- `manage.py stage` accepts AMDNR 0.3.5.8R2, which ships the lmxxf runtime as a
+  separate archive (`--lmxxf-archive`). The manager still installs 0.3.5.6.
+- Daniel 0.8.0 (danielblnc's NeuralHub host, new in AMDNR 0.3.5.8) is listed as
+  not supported, with the reasons, in the coverage table.
+
+## Validation
+
+The complete GPU suite passed three times in a row on RX 9070 XT under
+Proton-Wineland 11.0 (2026-09-30) on Linux 7.3.4 with the 0.3.5.6 package, the
+v0.3.5 bridge and the new signal guard. Before the fix, the exception check
+failed in every run, for the v0.3.6 package too; with it, the Windows
+exception stress test kept every register and address through HIP start-up,
+module loading, GPU kernels and clean-up (174,400 to 241,152 background
+exceptions per run, no mismatches). In every run the host identified the GPU
+as gfx1201 and lmxxf ran its 3440x1440 network at native size; the host
+pipeline composed changed output; danielblnc 0.6.0 completed every pass
+(717/717, 717/717 and 700/700) with no timeouts; OptiPatcher loaded in every
+host run; and the host verified the Model E receipt, with HelixSR's output
+differing from FSR 3.1 on 16.6% of output channels. The only skip is
+Wineland's known shared-fence rewind limitation. All 373 Linux unit tests
+pass.
+
+These are synthetic API and pipeline checks; no new game compatibility or
+long-duration stability is claimed beyond v0.3.5.
+
 # Linux v0.3.6 — upstream AMDNR 0.3.5.8R documentation
 
 A documentation release. The manager, the game wrapper, the HIP bridge and the
