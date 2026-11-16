@@ -130,7 +130,11 @@ static void trace_preserved(int number)
     char *digits = message + sizeof("amdnr-signals: preserving Wine handler for signal ") - 1;
     digits[0] = (char)('0' + number / 10);
     digits[1] = (char)('0' + number % 10);
-    (void)write(STDERR_FILENO, message, sizeof(message) - 1);
+    /* A diagnostic: nothing can be done if it is not written. glibc marks write()
+     * warn_unused_result when fortified (the default on Ubuntu), which a void
+     * cast does not silence. */
+    if (write(STDERR_FILENO, message, sizeof(message) - 1) < 0) {
+    }
 }
 
 int sigaction(int signal, const struct sigaction *action, struct sigaction *previous)
@@ -251,7 +255,8 @@ int sigaltstack(const stack_t *stack, stack_t *previous)
     if (trace_enabled)
     {
         static const char message[] = "amdnr-signals: keeping Wine's signal stack during COMGR\n";
-        (void)write(STDERR_FILENO, message, sizeof(message) - 1);
+        if (write(STDERR_FILENO, message, sizeof(message) - 1) < 0) {
+        }
     }
     /* LLVM frees its stack when sigaltstack fails and keeps running without it. */
     errno = EPERM;

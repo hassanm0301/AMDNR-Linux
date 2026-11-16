@@ -2,6 +2,7 @@
 from dataclasses import replace
 import hashlib
 import importlib.util
+import io
 import json
 from pathlib import Path
 import os
@@ -78,14 +79,19 @@ class CatalogTests(unittest.TestCase):
             self.assertNotIn("0.3.1", runtimes.HOST_RUNTIMES[version])
         # 0.3.5.8R2's host pins the same pass digests as 0.3.5.6.
         self.assertEqual(runtimes.HOST_RUNTIMES["0.3.5.8R2"], runtimes.HOST_RUNTIMES["0.3.5.6"])
-        self.assertEqual(set(manage.LMXXF_ARCHIVES), {"0.3.5.8R2"})
+        self.assertEqual(runtimes.HOST_RUNTIMES["0.3.5.8R18"], runtimes.HOST_RUNTIMES["0.3.5.6"])
+        self.assertEqual(runtimes.HOST_RUNTIMES["0.3.5.8R23"], runtimes.HOST_RUNTIMES["0.3.5.6"])
+        self.assertEqual(set(manage.LMXXF_ARCHIVES), {"0.3.5.8R2", "0.3.5.8R18", "0.3.5.8R23"})
+        # Upstream published the lmxxf archive with R2 only; later releases are staged with that one.
+        for later in ("0.3.5.8R18", "0.3.5.8R23"):
+            self.assertIs(manage.LMXXF_ARCHIVES[later], manage.LMXXF_ARCHIVES["0.3.5.8R2"])
         for version, separate in manage.LMXXF_ARCHIVES.items():
             self.assertIn(version, manage.RELEASES.values())
             self.assertRegex(separate.sha256, r"^[0-9a-f]{64}$")
-            self.assertEqual(separate.version, version)
+            self.assertEqual(separate.version, "0.3.5.8R2")
             self.assertEqual(separate.url, "https://github.com/3zwr1/AMD-NR---OptiScaler/releases/download/"
-                                           f"Alpha{version}/{separate.name}")
-            self.assertEqual(separate.name, f"AMDNR-lmxxf-{version}.zip")
+                                           f"Alpha0.3.5.8R2/{separate.name}")
+            self.assertEqual(separate.name, "AMDNR-lmxxf-0.3.5.8R2.zip")
 
     def test_lookup_rejects_unknown_versions(self):
         self.assertEqual(runtimes.daniel_runtime("0.5.1").pass_sha256[:8], "493b4a3b")
@@ -205,6 +211,19 @@ class ArchiveTests(unittest.TestCase):
             runtimes.fetch(source.as_uri(), digest(b"replaced upstream"), cache, "big.bin", size=4)
         self.assertEqual(sorted(path.name for path in cache.iterdir()), ["file.bin"])
 
+    def test_download_is_verified_as_it_arrives_and_read_once(self):
+        data = bytes(range(256)) * 9000  # more than two 1 MiB reads
+        sink = io.BytesIO()
+        self.assertEqual(runtimes.receive(io.BytesIO(data), sink, "file.bin", size=len(data)), digest(data))
+        self.assertEqual(sink.getvalue(), data)
+        with self.assertRaisesRegex(ValueError, "larger than published"):
+            runtimes.receive(io.BytesIO(data), io.BytesIO(), "file.bin", size=len(data) - 1)
+        source = self.root / "published.bin"
+        source.write_bytes(data)
+        with patch.object(runtimes, "_sha", side_effect=AssertionError("download read back from disk")):
+            fetched = runtimes.fetch(source.as_uri(), digest(data), self.root / "cache", "file.bin")
+        self.assertEqual(fetched.read_bytes(), data)
+
 
 class StageComponentTests(unittest.TestCase):
     def setUp(self):
@@ -292,13 +311,17 @@ class StageComponentTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "cannot load Model E"):
             self.stage(b"MZ older host", model_e=(folder, details))
 
-    def stage_split(self, lmxxf_members, give=True, pinned=None):
+    def stage_split(self, lmxxf_members, give=True, pinned=None, host="OptiScaler.dll",
+                    ini="[DlssNr]\nEnabled=false\n", extra=()):
         """Stage a release laid out like 0.3.5.8R2: lmxxf is a second archive on the release."""
         count = len(list(self.root.glob("split-*.zip")))
         archive, lmxxf = self.root / f"split-{count}.zip", self.root / f"split-{count}-lmxxf.zip"
         with zipfile.ZipFile(archive, "w") as release:
-            release.writestr("OptiScaler.ini", "[DlssNr]\nEnabled=false\n")
-            release.writestr("OptiScaler.dll", b"MZ host")
+            release.writestr("OptiScaler.ini", ini)
+            if host:
+                release.writestr(host, b"MZ host")
+            for name in extra:
+                release.writestr(name, b"not staged")
             release.writestr("OptiScaler\\libxess.dll", b"xess")
             release.writestr("Licenses/AMDNR_NOTICE.txt", "main notice")
             release.writestr("README.md", "docs")
@@ -336,6 +359,34 @@ class StageComponentTests(unittest.TestCase):
         source = (staged / "amdnr-linux/SOURCE.txt").read_text()
         self.assertIn("Host/runtime: AMDNR test, ", source)
         self.assertRegex(source, r"(?m)^lmxxf archive: https://example\.invalid/split-0-lmxxf\.zip, SHA-256 [0-9a-f]{64}$")
+
+    def test_release_laid_out_like_0_3_5_8R18_is_staged_with_lmxxf(self):
+        # R18 spells the host Optiscaler.dll, writes "key = value" and defaults to its Mochi runtime.
+        staged = self.stage_split(
+            self.lmxxf_members(), host="Optiscaler.dll",
+            ini="[Upscalers]\r\nDx12Upscaler = dlssd\r\n[DlssNr]\r\nNrBackend = mochizuki\r\n"
+                "Enabled = false\r\nStyleSlot1 = \r\n",
+            extra=("MochizukiNrRuntime.dll", "AMDNR-ModelB/AMDNRModelBWorker.exe", "dlssnr-amd/shaders/a.spv",
+                   "FSR4Fast/desktop/exact/amd_fidelityfx_upscaler_dx12.dll", "model-tools/dlssnr_extract_model.exe"))
+        top = sorted(path.relative_to(staged).as_posix() for path in staged.rglob("*")
+                     if path.is_file() and "amdnr-linux" not in path.parts)
+        self.assertEqual(top, sorted([
+            "winmm.dll", "OptiScaler.ini", "OptiScaler/libxess.dll", "LmxxfNrRuntime.dll", "LmxxfNrRuntime.pak",
+            "Licenses/AMDNR_NOTICE.txt", "Licenses/lmxxf_LICENSE.txt", "d3d12.dll", "d3d12core.dll",
+            "d3dcompiler_47.dll"]))
+        self.assertEqual((staged / "winmm.dll").read_bytes(), b"MZ host")
+        ini = (staged / "OptiScaler.ini").read_text()
+        self.assertRegex(ini, r"(?m)^NrBackend=lmxxf$")
+        self.assertRegex(ini, r"(?m)^Enabled=true$")
+        self.assertRegex(ini, r"(?m)^StyleSlot1=limit=0\.1500;edgeguard=1\.0000;$")
+        self.assertRegex(ini, r"(?m)^Dx12Upscaler = dlssd$")  # every other upstream default stays
+        self.assertNotIn("mochizuki", ini)
+        self.assertEqual(ini.count("StyleSlot1"), 1)
+
+    def test_release_archive_without_a_host_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "does not contain the host"):
+            self.stage_split(self.lmxxf_members(), host=None)
+        self.assertFalse(any(re.match(r"staged-", path.name) for path in self.root.iterdir()))
 
     def test_split_release_needs_its_pinned_lmxxf_archive(self):
         cases = ((dict(give=False), "ships lmxxf as a separate archive"),

@@ -85,6 +85,56 @@ def _sha(path):
         return hashlib.file_digest(source, "sha256").hexdigest()
 
 
+class _VerifiedDigests:
+    """SHA-256 values this process has computed, reused while a file is unchanged.
+
+    Looking at a game compares every installed file with its recorded digest,
+    about 1 GiB with lmxxf's weights, and the manager does so again after each
+    action and each time the game is selected. A file whose device, inode,
+    size, modification time and status-change time are all as they were when
+    it was last read is not read again. A file changed within the last few
+    seconds is always read, because coarse timestamps (two seconds on FAT)
+    could hide a second write. Only inspect uses this; every operation that
+    changes files hashes what it reads and writes.
+    """
+    SETTLED_NS = 3 * 1000**3
+    LIMIT = 8192
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._known = {}
+
+    @staticmethod
+    def _identity(details):
+        return (details.st_dev, details.st_ino, details.st_size, details.st_mtime_ns, details.st_ctime_ns)
+
+    def sha(self, path):
+        path = Path(path)
+        with path.open("rb") as source:
+            before = os.fstat(source.fileno())
+            identity = self._identity(before)
+            with self._lock:
+                known = self._known.get(str(path))
+            if known and known[0] == identity:
+                return known[1]
+            started = time.time_ns()
+            digest = hashlib.file_digest(source, "sha256").hexdigest()
+            settled = (stat.S_ISREG(before.st_mode) and self._identity(os.fstat(source.fileno())) == identity and
+                       0 <= started - max(before.st_mtime_ns, before.st_ctime_ns) and
+                       started - max(before.st_mtime_ns, before.st_ctime_ns) > self.SETTLED_NS)
+        with self._lock:
+            if settled:
+                if len(self._known) >= self.LIMIT:
+                    self._known.clear()
+                self._known[str(path)] = (identity, digest)
+            else:
+                self._known.pop(str(path), None)
+        return digest
+
+
+_verified = _VerifiedDigests()
+
+
 def _load_modules(root):
     # The existing CLI scripts use absolute sibling imports. Install temporary
     # bindings only while loading; each backend retains its own module objects
@@ -465,26 +515,40 @@ class LauncherBackend:
             raise ValueError("invalid proxy history in installation record")
         return name, list(history)
 
-    def _owned_file(self, game, record, name, purpose="proxy"):
+    def _owned_file(self, game, record, name, purpose="proxy", sha=_sha):
         entry = next((entry for entry in record["files"] if entry["path"] == name), None)
         path = self._safe(game, name)
         if (entry is None or name not in record["installed"] or not path.is_file() or
-                _sha(path) != entry["sha256"]):
+                sha(path) != entry["sha256"]):
             raise ConflictError(f"The managed {purpose} file is missing or modified: {name}. Repair the installation first.")
         return entry, path
 
-    def _switch_support(self, game, record, current):
-        self._owned_file(game, record, current, "host")
+    def _switch_support(self, game, record, current, sha=_sha):
+        """sha is how files are read: inspect may reuse digests, operations never do."""
+        self._owned_file(game, record, current, "host", sha)
         if current not in self.proxies.candidates(game, current=current):
             raise ConflictError("Another file occupies the current proxy name with different casing. Preserve it before continuing.")
         for name in ("amdnr-linux/proxies.py", "amdnr-linux/launch.py", "amdnr-linux/run.sh"):
-            self._owned_file(game, record, name, "launch support")
+            self._owned_file(game, record, name, "launch support", sha)
         if any(entry["path"] == _proxy_config for entry in record["files"]):
-            self._owned_file(game, record, _proxy_config, "proxy configuration")
+            self._owned_file(game, record, _proxy_config, "proxy configuration", sha)
             if self.proxies.read_config(game / "amdnr-linux") != current:
                 raise ConflictError("Proxy configuration disagrees with the installation record. Repair the installation first.")
         elif (game / _proxy_config).exists() or (game / _proxy_config).is_symlink():
             raise ConflictError("An unowned proxy configuration already exists. Preserve it before switching.")
+
+    def installation(self, game_dir):
+        """inspect's installed, proxy_name and recovery_needed, without reading the installed files."""
+        game = self._game(game_dir)
+        result = dict(game_dir=str(game), installed=False, proxy_name=None,
+                      recovery_needed=(self._transaction_dir(game) / "journal.json").exists())
+        try:
+            record = self._record(game)
+            if record:
+                result.update(installed=True, proxy_name=self._proxy_metadata(record)[0])
+        except (ValueError, OSError, ConflictError):
+            pass  # inspect reports the conflict; an untrusted record is not an installation here either
+        return result
 
     def inspect(self, game_dir, executable=None):
         game = self._game(game_dir)
@@ -513,7 +577,7 @@ class LauncherBackend:
                     path = self._safe(game, entry["path"])
                     if not path.is_file():
                         result["missing"].append(entry["path"])
-                    elif _sha(path) != entry["sha256"]:
+                    elif _verified.sha(path) != entry["sha256"]:
                         if entry["path"] == "OptiScaler.ini":
                             result["config_modified"] = True
                         else:
@@ -522,7 +586,7 @@ class LauncherBackend:
                         backup = self._safe(game, self.manage.BACKUP + "/" + entry["path"])
                         if not backup.is_file():
                             result["conflicts"].append(f"Missing original backup: {entry['path']}")
-                        elif entry.get("backup_sha256") and _sha(backup) != entry["backup_sha256"]:
+                        elif entry.get("backup_sha256") and _verified.sha(backup) != entry["backup_sha256"]:
                             result["conflicts"].append(f"Original backup was modified: {entry['path']}")
                 self._inspect_launch_support(game, result)
                 result["launch_failure"] = self._launch_failure(game)
@@ -535,7 +599,7 @@ class LauncherBackend:
                                        for name in (*available, *(name for name in self.proxies.SUPPORTED if name not in available))]
             if record:
                 try:
-                    self._switch_support(game, record, result["proxy_name"])
+                    self._switch_support(game, record, result["proxy_name"], _verified.sha)
                 except (ValueError, OSError, ConflictError) as error:
                     result["proxy_switch_issue"] = str(error)
                 else:
